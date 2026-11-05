@@ -56,11 +56,45 @@ CUTS={
 # 국어·수학 공통/선택 문항 분할: 국어 1~34 + 선택 35~45 / 수학 1~22 + 선택 23~30
 N={'국어':45,'수학':30,'영어':45,'한국사':20,'탐구':20}
 NCHOICES={'국어':5,'수학':5,'영어':5,'한국사':5,'탐구':5}
-FONT='C:/Windows/Fonts/malgun.ttf'
-for p in ['C:/Windows/Fonts/malgun.ttf','C:/Windows/Fonts/gulim.ttc','/usr/share/fonts/truetype/nanum/NanumGothic.ttf','/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf','/usr/share/fonts/truetype/nanum/NanumSquareR.ttf']:
- if Path(p).exists():FONT=p;break
-try:pdfmetrics.registerFont(TTFont('Korean',FONT)); FONTNAME='Korean'
-except:FONTNAME='Helvetica'
+# ReportLab 기본 Helvetica는 한글을 지원하지 않습니다.
+# 운영체제 폰트가 없는 Streamlit Cloud에서는 오픈 라이선스 나눔고딕을
+# 공식 Google Fonts 저장소에서 최초 1회 다운로드하여 서버 임시 캐시에 등록합니다.
+# 폰트 파일은 GitHub에 올리거나 프로그램 ZIP에 포함하지 않습니다.
+def ensure_korean_pdf_font():
+ import urllib.request
+ candidates=[
+  Path('C:/Windows/Fonts/malgun.ttf'),
+  Path('/usr/share/fonts/truetype/nanum/NanumGothic.ttf'),
+  Path('/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf'),
+  Path('/usr/share/fonts/truetype/nanum/NanumSquareR.ttf'),
+ ]
+ cache=Path('/tmp/thepremium-font-cache/NanumGothic-Regular.ttf')
+ candidates.append(cache)
+ errors=[]
+ for p in candidates:
+  if p.is_file() and p.stat().st_size > 100_000:
+   try:
+    pdfmetrics.registerFont(TTFont('Korean',str(p)))
+    return 'Korean'
+   except Exception as e: errors.append(str(e))
+ if not cache.is_file() or cache.stat().st_size < 100_000:
+  cache.parent.mkdir(parents=True,exist_ok=True)
+  url='https://raw.githubusercontent.com/google/fonts/main/ofl/nanumgothic/NanumGothic-Regular.ttf'
+  try:
+   with urllib.request.urlopen(url,timeout=25) as response:
+    font_bytes=response.read(6_000_000)
+   if len(font_bytes)<100_000 or font_bytes[:4] not in (b'\x00\x01\x00\x00',b'true'):
+    raise RuntimeError('다운로드한 파일이 올바른 TTF 글꼴이 아닙니다.')
+   cache.write_bytes(font_bytes)
+  except Exception as e:
+   raise RuntimeError('한글 PDF 글꼴을 준비하지 못했습니다. Streamlit 서버의 외부 네트워크를 확인해 주세요: '+str(e)) from e
+ try:
+  pdfmetrics.registerFont(TTFont('Korean',str(cache)))
+  return 'Korean'
+ except Exception as e:
+  raise RuntimeError('한글 PDF 글꼴 등록 실패: '+str(e)) from e
+
+FONTNAME='Korean'
 
 def norm(s):
  s=str(s or '').strip();return ALIAS.get(s,s)
@@ -176,6 +210,7 @@ def small_chart(c,values,x,y,width,height,subject):
   c.setFillColor(HexColor('#111827'));c.drawCentredString(px,py+5,str(g))
 
 def render_pdf(db,uid,include_answers=True):
+ ensure_korean_pdf_font()
  stu=next(z for z in db['roster'] if z['id']==uid)
  buff=io.BytesIO();c=canvas.Canvas(buff,pagesize=(595.28,841.89))
  c.setTitle(f"{stu['name']} 11월 더프 성적표")
