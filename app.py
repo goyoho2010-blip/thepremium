@@ -534,79 +534,138 @@ elif page=='11월 정답·배점':
    except:st.error('9개 정수, 내림차순, 마지막 값 0으로 입력하십시오.')
 
 elif page=='OMR 판독·검수':
- if not db['roster']:st.warning('학생 명부 메뉴에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()
- st.subheader('① 전체 학생 OMR PDF · 이미지 업로드')
- st.info('전체 학생의 OMR을 먼저 업로드합니다. PDF의 각 페이지를 확인한 후 아래에서 해당 학생·교과에 연결하십시오. 5종 OMR 기준 양식으로 답안 좌표를 자동 정렬합니다. 학생 이름·교과의 자동 식별은 아직 보장할 수 없으므로 PDF 페이지와 학생을 반드시 확인하십시오.')
- uploaded=st.file_uploader('전체 학생 OMR 파일 (PDF·PNG·JPG)',type=['pdf','png','jpg','jpeg'],key='all_student_omr')
- if uploaded:
-  content=uploaded.getvalue();kind='pdf' if uploaded.name.lower().endswith('.pdf') else 'image'
+ if not db['roster']:
+  st.warning('학생 명부 메뉴에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()
+ st.subheader('① 교과별 OMR PDF 일괄 업로드')
+ st.info('시험 종료 후 교과별 PDF를 각각 올리십시오. 예: 국어 PDF 20쪽 = 학생 20명의 국어 답안지. PDF의 모든 페이지를 한 번에 판독합니다. 학생명은 페이지별로 확인하여 연결합니다.')
+ subject_group=st.selectbox('업로드할 교과 영역',['국어','수학','영어','한국사','탐구'],key='subject_batch_group')
+ st.caption('탐구는 한 페이지의 탐구Ⅰ·탐구Ⅱ를 모두 판독합니다. 수학 단답형은 별도 확인이 필요합니다.')
+ uploaded=st.file_uploader(f'{subject_group} OMR 묶음 PDF (여러 학생의 답안지가 들어 있는 파일)',type=['pdf','png','jpg','jpeg'],key='all_student_omr')
+ if uploaded is not None:
+  content=uploaded.getvalue()
+  kind='pdf' if uploaded.name.lower().endswith('.pdf') else 'image'
   if kind=='pdf':
-   with fitz.open(stream=content,filetype='pdf') as doc: pages=len(doc)
-  else: pages=1
-  st.caption(f'업로드 파일: {uploaded.name} · {pages}페이지')
-  st.subheader('② PDF 페이지 선택 및 학생 · 교과 연결')
-  page_idx=st.number_input('검수할 PDF 페이지',min_value=1,max_value=pages,value=1,key='omr_page_number')-1
-  img=encode_page(content,kind,page_idx)
-  rotation=0  # 기준 양식과의 특징점 매칭으로 방향 자동 보정
-  with st.expander('원본 OMR 페이지 보기',expanded=False):
-   st.image(img,caption=f'원본 OMR · {page_idx+1}/{pages}페이지',width=550)
-  opt=[f"{x['student_number']} | {x['name']}" for x in db['roster']]
-  idx=st.selectbox('이 페이지에 해당하는 학생',range(len(opt)),format_func=lambda i:opt[i]);uid=db['roster'][idx]['id']
-  subject=st.selectbox('이 페이지의 교과 영역',CATS);subject_name=which(subject);n=N[subject_name]
-  choice=(db['roster'][idx].get({'국어':'korean','수학':'math','탐구1':'explore1','탐구2':'explore2'}.get(subject,''),'') if subject not in ('영어','한국사') else subject)
-  st.caption(f'선택과목: {norm(choice) or "미설정"} / 총 {n}문항')
-  st.subheader('③ 자동판독 → 확인 → 확정')
-  st.info('좌표 조정이 필요 없습니다. 5종 OMR 기준 양식을 사용해 방향과 위치를 자동 보정합니다. 수학 단답형과 불확실한 마킹은 직접 확인해 주세요.')
-  @st.cache_data(show_spinner=False,max_entries=24)
-  def recognize_page(content_bytes,kind_name,page_number,rotation_degrees,subject_code):
-   page_image=encode_page(content_bytes,kind_name,page_number)
-   if rotation_degrees:page_image=np.array(Image.fromarray(page_image).rotate(-rotation_degrees,expand=True))
-   return read_omr(page_image,subject_code)
-  if st.button('이 페이지 OMR 자동판독',type='primary'):
-   try:
-    with st.spinner('답안지 자동 정렬 및 마킹을 판독하고 있습니다.'):
-     result,stats,preview,meta=recognize_page(content,kind,page_idx,rotation,subject)
-    st.session_state.omr_auto_result={'subject':subject,'uid':uid,'page':int(page_idx+1),'file':uploaded.name,'answers':result,'stats':stats,'preview':preview,'meta':meta}
-   except Exception as e:
-    st.error(f'자동판독 실패: {e}')
-  auto=st.session_state.get('omr_auto_result')
-  if auto and auto.get('subject')==subject and auto.get('uid')==uid and auto.get('page')==page_idx+1 and auto.get('file')==uploaded.name:
-   meta=auto['meta'];stats=auto['stats'];result=auto['answers']
-   n_ok=sum(x['상태']=='정상' for x in stats)
-   st.success(f'자동 정렬 완료 · 판독 {n_ok}문항 / 검수 필요 {len(stats)-n_ok}문항 · 방향 보정 {meta["rotation"]}°')
-   st.image(auto['preview'],caption='판독 위치 자동 정렬 결과 · 파란 원은 답안 위치, 초록 원은 자동 판독된 답안',use_container_width=True)
-   needs=[x for x in stats if x['상태']!='정상']
-   if needs:
-    st.warning(f'확인이 필요한 문항 {len(needs)}개입니다. 실제 답안지와 비교하여 검수해 주세요.')
-    st.dataframe(needs,hide_index=True,use_container_width=True)
-   else:st.caption('모든 객관식 문항이 정상 판독되었습니다. 답안 검수 후 확정하십시오.')
-   if st.button('자동판독 답안을 검수표로 가져오기'):
-    db['results'].setdefault(uid,{})[subject]={'answers':result,'review':'검수중','source':uploaded.name,'page':int(page_idx+1)}
-    save(db)
-    st.success('답안 검수표에 반영했습니다. 아래에서 확인 후 확정하세요.')
-    st.rerun()
-  elif not auto:
-   st.caption('자동판독 버튼을 누르면 기준 OMR 양식에 맞춰 자동으로 위치가 정렬됩니다.')
-  rec=db['results'].setdefault(uid,{}).setdefault(subject,{})
-  original=rec.get('answers',['']*n)
-  if len(original)!=n:original=['']*n
-  st.subheader('학생 답안 검수 · 정오답')
-  st.caption('문항번호 순서대로 학생 기입값을 입력하십시오. 미표기/복수 표기는 빈칸으로 남기고 검수합니다. 수학 단답형에는 숫자를 입력할 수 있습니다.')
-  editable=st.text_area('학생답안 (쉼표로 구분, 빈칸 허용)',','.join(str(v) for v in original),height=105,key=f'edit_{uid}_{subject}_{len(original)}')
-  if st.button('검수 완료 · 답안 확정',type='primary'):
-   v=[x.strip() for x in editable.split(',')]
-   if len(v)!=n:st.error(f'{n}개 답안이 필요합니다. 현재 {len(v)}개입니다.')
-   else:
-    rec.update({'answers':v,'review':'확정','source':rec.get('source','직접 검수')});save(db);st.success('답안 확정 및 자동 재채점 완료')
-  r=scored(db,uid,subject)
-  if r['ready']:
-   st.metric('원점수',f"{r['score']}점",f"10월 대비 기준 {r['grade']}등급" if r['grade'] else '등급컷 미등록')
-   def chunks(seq,n=10):return [seq[i:i+n] for i in range(0,len(seq),n)]
-   for p,ans in enumerate(chunks(r['answers'])):
-    o=p*10;cor=r['correct'][o:o+10];st.table([dict(zip(['구분']+[str(i) for i in range(o+1,o+len(ans)+1)],['학생답안']+ans)),dict(zip(['구분']+[str(i) for i in range(o+1,o+len(ans)+1)],['정오답']+cor))])
-  else:st.caption('답안 검수 확정 및 해당 과목의 검증된 정답·배점 등록 후 점수와 등급을 표시합니다.')
- else:
-  st.caption('먼저 전체 학생 OMR 파일을 업로드하십시오. 그 다음 PDF 페이지와 학생·교과를 연결할 수 있습니다.')
+   with fitz.open(stream=content,filetype='pdf') as doc:pages=len(doc)
+  else:pages=1
+  import hashlib
+  fingerprint=hashlib.sha256(content).hexdigest()
+  batch=st.session_state.get('omr_batch')
+  if batch and (batch.get('fingerprint')!=fingerprint or batch.get('mode')!=mode or batch.get('subject_group')!=subject_group):
+   st.session_state.pop('omr_batch',None);batch=None
+  st.caption(f'파일: {uploaded.name} · {subject_group} · {pages}페이지')
+  st.subheader('② 전체 페이지 자동판독')
+  if st.button(f'{subject_group} {pages}페이지 전체 자동판독',type='primary',use_container_width=True):
+   results=[]
+   bar=st.progress(0,text='교과별 OMR 판독 준비')
+   for pi in range(pages):
+    subkeys=['탐구1','탐구2'] if subject_group=='탐구' else [subject_group]
+    try:
+     img=encode_page(content,kind,pi,dpi=160)
+     for sub in subkeys:
+      try:
+       answers,diagnostics,preview,meta=read_omr(img,sub)
+       results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':answers,
+                       'stats':diagnostics,'rotation':meta.get('rotation',0),
+                       'error':'','reviewed':False,'student_id':''})
+      except Exception as exc:
+       results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':['']*N[which(sub)],
+                       'stats':[],'rotation':None,'error':str(exc),'reviewed':False,'student_id':''})
+    except Exception as exc:
+     for sub in subkeys:
+      results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':['']*N[which(sub)],
+                      'stats':[],'rotation':None,'error':'PDF 변환 실패: '+str(exc),'reviewed':False,'student_id':''})
+    bar.progress((pi+1)/pages,text=f'{pi+1}/{pages}페이지 처리 완료')
+   st.session_state.omr_batch={'fingerprint':fingerprint,'mode':mode,'rows':results,
+                               'subject_group':subject_group,'file':uploaded.name}
+   st.rerun()
+  batch=st.session_state.get('omr_batch')
+  if batch and batch.get('fingerprint')==fingerprint and batch.get('mode')==mode and batch.get('subject_group')==subject_group:
+   rows=batch['rows']
+   good=sum(not r['error'] for r in rows)
+   st.success(f'일괄 판독 시도 완료: {pages}페이지 / 답안 영역 {len(rows)}건 / 정렬 성공 {good}건')
+   st.caption('자동 판독 성공은 실제 마킹의 정확성을 보증하지 않습니다. 학생·답안을 검수한 결과만 반영합니다.')
+   summary=[]
+   for i,r in enumerate(rows):
+    ok=sum(x.get('상태')=='정상' for x in r['stats'])
+    summary.append({'번호':i+1,'PDF 페이지':r['page'],'교과':LABEL.get(r['subject'],r['subject']),
+                    '자동 판독':f'{ok}/{len(r["answers"])}',
+                    '확인 필요':len(r['answers'])-ok,
+                    '상태':'실패' if r['error'] else ('검수완료' if r['reviewed'] else '검수대기')})
+   st.dataframe(summary,use_container_width=True,hide_index=True)
+   st.subheader('③ PDF 페이지별 학생 연결 · 답안 검수')
+   roster=db['roster']
+   labels=['학생 선택 필요']+[f"{a['student_number']} | {a['name']} | {a.get('school','')}" for a in roster]
+   chosen_page=st.selectbox('검수할 PDF 페이지',range(1,pages+1),format_func=lambda j:f'{j}페이지 · {subject_group} OMR')
+   indices=[i for i,r in enumerate(rows) if r['page']==chosen_page]
+   existing=next((rows[i]['student_id'] for i in indices if rows[i].get('student_id')),'')
+   selected_index=next((j+1 for j,v in enumerate(roster) if v['id']==existing),0)
+   selected=st.selectbox(f'{chosen_page}페이지 학생',range(len(labels)),index=selected_index,
+                         format_func=lambda j:labels[j],key=f'subject_student_{chosen_page}_{fingerprint[:8]}_{subject_group}')
+   selected_uid=roster[selected-1]['id'] if selected else ''
+   # 페이지 하나는 학생 한 명의 OMR: 탐구 두 선택과목에도 같은 학생 ID를 적용합니다.
+   for i in indices:
+    if rows[i]['student_id']!=selected_uid:rows[i]['reviewed']=False
+    rows[i]['student_id']=selected_uid
+   if selected_uid:
+    dupe_pages=sorted({r['page'] for r in rows if r['student_id']==selected_uid and r['page']!=chosen_page})
+    if dupe_pages:st.warning(f'같은 PDF의 {dupe_pages}페이지에도 해당 학생이 연결되어 있습니다. 중복 여부를 확인하십시오.')
+   st.caption('PDF 페이지 순서와 학생명은 자동으로 확정되지 않습니다. 원본에 표시된 학생번호·이름을 확인하여 연결하십시오.')
+   if st.checkbox('해당 OMR 원본 미리보기',key=f'subject_preview_{chosen_page}_{fingerprint[:8]}'):
+    st.image(encode_page(content,kind,chosen_page-1,dpi=110),width=700)
+   for i in indices:
+    r=rows[i]
+    st.markdown(f'**{chosen_page}페이지 · {LABEL.get(r["subject"],r["subject"])}**')
+    if r['error']:st.error('자동판독 실패: '+r['error'])
+    if st.button('이 답안 영역 다시 판독',key=f'subject_retry_{i}_{fingerprint[:8]}_{subject_group}'):
+     try:
+      im=encode_page(content,kind,r['page']-1)
+      ans,stats,_,meta=read_omr(im,r['subject'])
+      r.update(answers=ans,stats=stats,rotation=meta.get('rotation'),error='',reviewed=False)
+      st.rerun()
+     except Exception as e:st.error(str(e))
+    if r['stats']:
+     uncertain=[x for x in r['stats'] if x.get('상태')!='정상']
+     if uncertain:
+      st.warning(f'재확인이 필요한 문항 {len(uncertain)}개 (수학 단답형 포함)')
+      st.dataframe(uncertain,use_container_width=True,hide_index=True)
+     else:st.caption('자동 판독 후보는 모두 정상 판정되었습니다. 실제 OMR과 대조하십시오.')
+    edited=st.text_area('판독 답안 (쉼표로 구분, 미표기=빈칸)',value=','.join(map(str,r['answers'])),
+                        key=f'subject_edit_{i}_{r["subject"]}_{fingerprint[:8]}',height=95)
+    parsed=[x.strip() for x in edited.split(',')]
+    correct_count=N[which(r['subject'])]
+    if len(parsed)!=correct_count:
+     st.error(f'답안 수 {len(parsed)}개 / 필요 {correct_count}개')
+     r['reviewed']=False
+    else:
+     if parsed!=r['answers']:r['reviewed']=False
+     r['answers']=parsed
+     if st.button('이 교과 검수 완료',key=f'subject_review_{i}_{fingerprint[:8]}'):
+      if not selected_uid:st.error('학생을 먼저 선택하십시오.')
+      elif r['error']:st.error('자동판독 오류를 해결하거나 재판독하십시오.')
+      else:r['reviewed']=True;st.success('검수 완료 — 아직 저장되지 않았습니다.')
+   st.divider()
+   st.subheader('④ 검수 완료 답안 일괄 확정')
+   ready=[r for r in rows if r['reviewed'] and r['student_id'] and not r['error']]
+   st.write(f'검수 완료 **{len(ready)} / {len(rows)}건**')
+   # 같은 학생/교과 중복 저장으로 서로 다른 답안이 뒤집히지 않게 방지합니다.
+   keys=[(r['student_id'],r['subject']) for r in ready]
+   duplicates_in_upload=len(keys)!=len(set(keys))
+   if duplicates_in_upload:st.error('동일 학생·교과가 여러 페이지에 중복 연결되었습니다. 학생 매칭을 수정하십시오.')
+   st.warning('확정하면 해당 학생·교과의 기존 11월 답안이 교체될 수 있습니다. 정답·배점이 확정된 경우에만 성적을 계산할 수 있습니다.')
+   confirmed=st.checkbox('원본의 학생명·교과·마킹 답안을 검수했습니다.',key='subject_batch_commit_confirm')
+   if st.button('검수 완료 교과 답안 일괄 저장',disabled=not ready or not confirmed or duplicates_in_upload,type='primary'):
+    newresults=copy.deepcopy(db['results'])
+    existing_count=sum(bool(db['results'].get(r['student_id'],{}).get(r['subject'])) for r in ready)
+    for r in ready:
+     newresults.setdefault(r['student_id'],{})[r['subject']]={
+      'answers':list(r['answers']),'review':'확정','source':uploaded.name,'page':r['page']}
+    db['results']=newresults;save(db)
+    st.success(f'{subject_group} 답안 {len(ready)}건 저장 완료 (기존 기록 대체 {existing_count}건).')
+    if test_mode:st.info('테스트 모드 — 실제 운영 데이터에는 반영되지 않았습니다.')
+    for r in ready:r['reviewed']=False
+    st.info('다음 교과 PDF를 처리하려면 현재 파일을 제거하고 상단에서 다음 교과를 선택하여 업로드하십시오.')
+  else:st.caption('「전체 자동판독」 버튼을 클릭하십시오.')
+ else:st.caption('교과를 선택한 뒤 PDF를 업로드하십시오.')
 
 elif page=='학생 성적표':
  if not db['roster']:st.warning('학생 명부 메뉴에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()
