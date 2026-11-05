@@ -16,6 +16,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
 ROOT=Path(__file__).resolve().parent
+REFERENCE_ZIP=ROOT/'reference'/'november-answers.zip'
 DATA=ROOT/'data'; DATA.mkdir(exist_ok=True)
 STORAGE=DATA/'work.json'
 MONTHS=['3월','5월','7월','8월','9월','10월','11월']
@@ -109,9 +110,9 @@ def grade_of(subject,choice,score,cuts):
  return 9
 
 def starting_state():
- history=json.loads((DATA/'history.json').read_text(encoding='utf8'))
+ history=json.loads((DATA/'history.json').read_text(encoding='utf8')) if (DATA/'history.json').exists() else {'roster':[],'history':{}}
  roster=history['roster']
- return {'roster':roster,'history':history['history'],'results':{},'keys':{},'cuts':CUTS,'layout':{},'logos':{k:base64.b64encode((ROOT/'assets'/v).read_bytes()).decode() for k,v in {'횡성인재육성관':'hoengseong.png','대성학력개발연구소':'daesung.png','천명의선택입시연구소':'choice1000.png'}.items() if (ROOT/'assets'/v).exists()},'notes':{},'settings':{'title':'11월 대성THE프리미엄 모의고사 성적','subtitle':'자체 정산-10월 성적대비등급'}}
+ return {'roster':roster,'history':history['history'],'results':{},'keys':{},'key_verified':{},'cuts':CUTS,'layout':{},'logos':{k:base64.b64encode((ROOT/'assets'/v).read_bytes()).decode() for k,v in {'횡성인재육성관':'hoengseong.png','대성학력개발연구소':'daesung.png','천명의선택입시연구소':'choice1000.png'}.items() if (ROOT/'assets'/v).exists()},'notes':{},'settings':{'title':'대성THE프리미엄 모의고사 성적 [11월]','subtitle':'자체 정산-10월 성적대비등급'}}
 
 def get_state():
  if 'db' not in st.session_state:
@@ -178,7 +179,7 @@ def scored(db,uid,subject):
  rec=db['results'].get(uid,{}).get(subject,{})
  answers=rec.get('answers',[]); key=answer_key(db,subject,choice)
  n=N[which(subject)]
- if (subject in ('국어','수학','탐구1','탐구2') and not choice) or len(key)!=n or any(str(k.get('answer','')).strip()=='' or not isinstance(k.get('points'),int) or k['points']<=0 for k in key):
+ if (subject in ('국어','수학','탐구1','탐구2') and not choice) or len(key)!=n or not db.get('key_verified',{}).get(which(subject)+'|'+norm(choice),False) or any(str(k.get('answer','')).strip()=='' or not isinstance(k.get('points'),int) or k['points']<=0 for k in key):
   return {'choice':choice,'answers':answers,'correct':[],'score':None,'grade':None,'ready':False,'review':rec.get('review','미채점'),'key':key}
  if not answers or len(answers)!=n or rec.get('review')!='확정':
   return {'choice':choice,'answers':answers,'correct':[],'score':None,'grade':None,'ready':False,'review':rec.get('review','미채점'),'key':key}
@@ -226,7 +227,10 @@ def render_pdf(db,uid,include_answers=True):
  def header():
   logo_or_text('횡성인재육성관',38,779,175,34,'횡성인재육성관')
   text(365,805,'2026년 11월 / 고3',8);line(775)
-  title=db['settings']['title'];text(76,745,title,17);text(136,727,'(자체 정산 · 10월 성적 대비 잠정등급)',10)
+  title=db['settings'].get('title','대성THE프리미엄 모의고사 성적 [11월]')
+  fs=min(17, max(11, 480/max(1,pdfmetrics.stringWidth(title,FONTNAME,1))))
+  c.setFont(FONTNAME,fs);c.setFillColor(HexColor('#20384E'));c.drawCentredString(297.64,745,title)
+  c.setFont(FONTNAME,10);c.drawCentredString(297.64,727,'(자체 정산 · 10월 성적 대비 잠정등급)')
   text(40,696,f"학생명  {stu['name']}     학교  {stu.get('school') or '미입력'}     학년  {stu.get('grade') or '고3'}",10)
   line(684)
  def footer():
@@ -247,7 +251,7 @@ def render_pdf(db,uid,include_answers=True):
   text(columns[3],yy,str(newg) if newg else '-',9)
   text(columns[4],yy,str(oldg) if oldg else '-',9);text(columns[5],yy,diff,9)
   line(yy-10)
- text(42,425,'월별 등급 변화 · 3월—11월',11)
+ text(42,425,'대성THE프리미엄모의고사 응시 월별 등급 변화',11)
  for j,sub in enumerate(['국어','수학','영어','탐구1','탐구2']):
   x=50+(j%2)*265;y=345-(j//2)*94
   values=[]
@@ -297,6 +301,61 @@ def export_xlsx(db):
    sheet.column_dimensions[letter].width=18
  out=io.BytesIO();wb.save(out);return out.getvalue()
 
+
+# 기존 3~10월 성적 엑셀 재등록 — 공개 GitHub 저장소에는 학생 자료를 넣지 않습니다.
+def import_history_excel(content):
+ from openpyxl import load_workbook
+ from collections import defaultdict
+ wb=load_workbook(io.BytesIO(content),read_only=True,data_only=True)
+ missing=[m for m in MONTHS[:-1] if m not in wb.sheetnames]
+ if missing:raise ValueError('필수 시트 누락: '+', '.join(missing))
+ roster={};history={};id_names=defaultdict(set);month_count={}
+ for month in MONTHS[:-1]:
+  ws=wb[month];count=0
+  for row in ws.iter_rows(min_row=4,max_col=99,values_only=True):
+   if len(row)<78:continue
+   name=row[4]
+   num=row[3]
+   if not isinstance(name,str) or not name.strip() or num in (None,''):continue
+   name=name.strip();num=str(int(num)) if isinstance(num,(int,float)) and float(num).is_integer() else str(num).strip()
+   uid=f'{num}|{name}'  # 번호 충돌 시 별개 학생 보호
+   school=str(row[5] or '').strip()
+   id_names[num].add(name)
+   if uid not in roster:roster[uid]={'id':uid,'student_number':num,'name':name,'school':school,'grade':'고3'}
+   elif school and not roster[uid].get('school'):roster[uid]['school']=school
+   def score(i):
+    v=row[i] if i<len(row) else None
+    if isinstance(v,(float,int)) and 0<=v<=100:return int(v) if float(v).is_integer() else float(v)
+    return None
+   def grade(i):
+    v=row[i] if i<len(row) else None
+    try:
+     z=int(v);return z if 1<=z<=9 else None
+    except:return None
+   history.setdefault(uid,{})[month]={
+    '국어':{'choice':row[8],'score':score(12),'grade':grade(15)},
+    '수학':{'choice':row[22],'score':score(26),'grade':grade(29)},
+    '영어':{'choice':'영어','score':score(36),'grade':grade(37)},
+    '한국사':{'choice':'한국사','score':score(76),'grade':grade(77)},
+    '탐구1':{'choice':row[54],'score':score(55),'grade':grade(58)},
+    '탐구2':{'choice':row[65],'score':score(66),'grade':grade(69)}
+   }
+   count+=1
+  month_count[month]=count
+ for uid,stu in roster.items():
+  for sub,field in [('국어','korean'),('수학','math'),('탐구1','explore1'),('탐구2','explore2')]:
+   picks=[history[uid][m][sub].get('choice') for m in reversed(MONTHS[:-1]) if m in history[uid]]
+   stu[field]=next((norm(p) for p in picks if p and str(p).strip()),'')
+ collision={num:sorted(names) for num,names in id_names.items() if len(names)>1}
+ return {'roster':list(roster.values()),'history':history},collision,month_count
+
+def install_history(db,record):
+ # 과거 OMR 검수 결과는 학생번호+이름이 정확히 일치하는 인원에만 유지
+ allowed={s['id'] for s in record['roster']}
+ db['results']={uid:r for uid,r in db.get('results',{}).items() if uid in allowed}
+ db['roster']=record['roster'];db['history']=record['history']
+ return len(allowed)
+
 st.set_page_config(page_title='11월 더프 | 성적처리 NAVI',page_icon='📊',layout='wide')
 # 배포된 앱은 비밀번호가 없으면 학생 개인정보 접근을 차단합니다.
 try:
@@ -315,15 +374,31 @@ if not st.session_state.get('authorized',False):
   else:st.error('비밀번호를 확인하십시오.')
  st.stop()
 db=get_state()
+if db.get('settings',{}).get('title')=='11월 대성THE프리미엄 모의고사 성적':
+ db['settings']['title']='대성THE프리미엄 모의고사 성적 [11월]'
 st.title('11월 대성 THE PREMIUM | OMR 성적처리 NAVI')
 st.caption('Streamlit Cloud 배포판 · 2026년 11월 고3 · OMR 판독 / 검수 / 10월 기준 잠정 등급 / 월별 변화 / PDF 인쇄 및 파일 저장')
 st.warning('11월 전국 공동 채점 결과가 아닙니다. 10월 원점수 등급컷을 11월에 적용한 비공식 참고 성적이며 시험 난이도 차이는 보정하지 않습니다.')
-page=st.sidebar.radio('메뉴',['학생 명부','11월 정답·배점','OMR 판독·검수','학생 성적표','일괄 인쇄·저장','설정·로고·백업'])
+page=st.sidebar.radio('메뉴',['11월 정답·배점','학생 명부','OMR 판독·검수','학생 성적표','일괄 인쇄·저장','설정·로고·백업'])
 if st.sidebar.button('현재 수정사항 저장',use_container_width=True):save(db);st.sidebar.success('작업 파일에 저장했습니다.')
 
 if page=='학생 명부':
  st.subheader('3월~10월 성적 엑셀 연결 명부')
+ st.markdown('**수정된 학생 명부와 성적 엑셀 불러오기**')
+ st.caption('학생 개인정보가 포함된 엑셀은 GitHub에 올리지 마십시오. 로그인 후 이 화면에서만 올리십시오. 학생번호와 이름을 함께 대조합니다.')
+ new_excel=st.file_uploader('3월·5월·7월·8월·9월·10월 시트가 있는 엑셀(.xlsx)',type=['xlsx'],key='history_xlsx')
+ if new_excel and st.button('성적 엑셀 검증 및 학생 이력 갱신',type='primary'):
+  try:
+   parsed,collision,month_count=import_history_excel(new_excel.getvalue())
+   count=install_history(db,parsed);save(db)
+   st.success(f'고유 학생 {count}명 / 월별 기록 {sum(month_count.values())}건 갱신')
+   st.write('월별 응시 기록 수:',month_count)
+   if collision:st.warning('학생번호가 같은데 이름이 다른 기록이 있습니다. 임의 병합하지 않았습니다.');st.json(collision)
+   st.rerun()
+  except Exception as e:st.error(f'엑셀 불러오기 실패: {e}')
+
  st.write(f"학생 {len(db['roster'])}명 · 월별 기존 성적이 있는 학생을 통합 관리합니다.")
+ if not db['roster']:st.info('위에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()
  names=[f"{a['student_number']} | {a['name']}" for a in db['roster']]
  selected=st.selectbox('수정할 학생',list(range(len(names))),format_func=lambda i:names[i])
  stu=db['roster'][selected]
@@ -334,30 +409,77 @@ if page=='학생 명부':
   stu[k]=st.selectbox(label,options,index=options.index(previous) if previous in options else 0,key='choice_'+k)
  if st.button('학생 정보 저장'):save(db);st.success('저장했습니다.')
  st.dataframe([{'학생번호':x.get('student_number'),'이름':x['name'],'학교':x.get('school',''),'국어':norm(x.get('korean')),'수학':norm(x.get('math')),'탐구Ⅰ':norm(x.get('explore1')),'탐구Ⅱ':norm(x.get('explore2'))} for x in db['roster']],use_container_width=True,hide_index=True)
- st.info('기존 엑셀의 월별 성적은 포함되어 있습니다. 기존 성적은 이름과 학생번호 결합 ID로 연결하므로, 이름만 변경하더라도 과거 이력은 유지됩니다.')
+ st.info('수정 엑셀의 학생번호·이름·학교를 대조해 이력을 연결합니다. 서로 다른 이름이 동일 학생번호를 쓴 경우 별도 인원으로 구분합니다.')
 
 elif page=='11월 정답·배점':
- st.subheader('정답표 등록 및 검증')
+ st.subheader('① 11월 정답 원본 확인')
+ st.info('앞서 제공받은 11월 정답 이미지 16장을 원본 대조용으로 포함했습니다. 이미지를 보고 정답·배점을 검수한 뒤 아래 표를 확정해야 채점됩니다. 원본 이미지에서 정답이 자동 추출·검증된 상태는 아닙니다.')
+ source=st.file_uploader('추가 정답 원본 ZIP 또는 PDF·이미지 올리기',type=['zip','pdf','png','jpg','jpeg'],key='key_reference_upload')
+ images=[]
+ try:
+  if source and source.name.lower().endswith('.zip'):
+   with zipfile.ZipFile(io.BytesIO(source.getvalue())) as z:
+    images=[(n,z.read(n)) for n in z.namelist() if n.lower().endswith(('.jpg','.jpeg','.png')) and not n.startswith('__MACOSX/')]
+  elif source:
+   if source.name.lower().endswith('.pdf'):
+    with fitz.open(stream=source.getvalue(),filetype='pdf') as d:
+     for i in range(len(d)):
+      pix=d[i].get_pixmap(matrix=fitz.Matrix(1.4,1.4),alpha=False)
+      images.append((f'{source.name} / {i+1}쪽',pix.tobytes('png')))
+   else:images=[(source.name,source.getvalue())]
+  elif REFERENCE_ZIP.exists():
+   with zipfile.ZipFile(REFERENCE_ZIP) as z:
+    images=[(n,z.read(n)) for n in z.namelist() if n.lower().endswith(('.jpg','.jpeg','.png'))]
+ except Exception as e: st.error(f'원본 이미지 열기 실패: {e}')
+ if images:
+  st.caption(f'정답 원본 이미지 {len(images)}장 · 원본의 정답 및 배점 수치를 직접 대조하십시오.')
+  imgidx=st.selectbox('확인할 정답 원본',range(len(images)),format_func=lambda i:f'{i+1:02d} · {images[i][0]}',key='answer_reference_idx')
+  st.image(images[imgidx][1],caption=images[imgidx][0],use_container_width=True)
+ else:st.warning('정답 원본이 없습니다. 상단에 정답 ZIP을 올리십시오.')
+ st.divider()
+ st.subheader('② 과목·선택과목별 정답 및 배점 입력·검증')
  sub=st.selectbox('영역',['국어','수학','영어','한국사','탐구'])
  choice=st.selectbox('선택과목',OPTIONS[sub]);k=sub+'|'+choice;n=N[sub]
  current=db['keys'].get(k,[{'question':i+1,'answer':'','points':None} for i in range(n)])
  if len(current)!=n:current=[{'question':i+1,'answer':'','points':None} for i in range(n)]
- st.caption('11월 정답 원본과 문항별 배점을 반드시 대조하십시오. 정답/배점이 모두 입력되고 학생 검수가 확정되기 전에는 점수가 산출되지 않습니다.')
- # CSV paste avoids heavy spreadsheet deps
+ st.caption('국어 1~34번·수학 1~22번 공통문항도 포함해 각 선택과목의 전체 문항을 입력하십시오. 수학 단답형은 정수를 입력합니다.')
  raw='\n'.join(f"{p['question']},{p.get('answer','')},{p.get('points') or ''}" for p in current)
- text_csv=st.text_area('문항번호, 정답, 배점 (한 줄에 한 문항)',raw,height=350)
- total=st.number_input('만점 확인',min_value=1,max_value=100,value=50 if sub=='탐구' else 100)
- if st.button('정답·배점 검증 후 저장'):
+ csv_file=st.file_uploader('정답·배점 CSV 가져오기 (선택 사항)',type=['csv'],key=f'keycsv_{k}')
+ if csv_file:
+  try:raw=csv_file.getvalue().decode('utf-8-sig').strip()
+  except UnicodeDecodeError:st.error('CSV를 UTF-8로 저장해 주십시오.')
+ st.download_button('빈 정답 CSV 양식 다운로드',('\n'.join(f'{i},,' for i in range(1,n+1))).encode('utf-8-sig'),file_name=f'thepremium-key-{sub}.csv',mime='text/csv')
+ text_csv=st.text_area('문항번호,정답,배점 — 한 줄에 한 문항',raw,height=300,key=f'key_editor_{k}')
+ total=st.number_input('만점 확인',min_value=1,max_value=100,value=50 if sub=='탐구' else 100,key=f'key_fullscore_{k}')
+ st.caption(f'현재 확정 여부: {"확정" if db.get("key_verified",{}).get(k) else "미확정"} · 정답 원본과 재확인 후 저장하십시오.')
+ if st.button('문항수·정답·배점 검증 후 확정 저장',type='primary'):
   try:
    result=[]
    for line in text_csv.splitlines():
-    parts=[x.strip() for x in line.split(',')];assert len(parts)==3
-    q=int(parts[0]);v=parts[1];pt=int(parts[2]);assert pt>0 and v!=''
-    result.append({'question':q,'answer':v,'points':pt})
-   assert [z['question'] for z in result]==list(range(1,n+1)),'문항번호 또는 문항수 오류'
-   assert sum(z['points'] for z in result)==total,'문항 배점 합계 오류'
-   db['keys'][k]=result;save(db);st.success(f'{choice} 정답 {n}문항 저장 완료 (총 {total}점)')
+    parts=[x.strip() for x in line.split(',')]
+    if len(parts)!=3:raise ValueError('각 행은 문항번호,정답,배점 3개여야 합니다.')
+    q=int(parts[0]);ans=parts[1];points=int(parts[2])
+    if points<=0 or not ans:raise ValueError(f'{q}번 정답 또는 배점이 비어 있습니다.')
+    if sub=='수학' and 23<=q<=30:
+     if not ans.isdecimal():raise ValueError(f'{q}번 수학 단답은 숫자로 입력하십시오.')
+    elif ans not in ('1','2','3','4','5'):
+     raise ValueError(f'{q}번 객관식 답안은 1~5 중 하나여야 합니다.')
+    result.append({'question':q,'answer':ans,'points':points})
+   if [z['question'] for z in result]!=list(range(1,n+1)):raise ValueError(f'1~{n}번 문항번호가 중복·누락·순서 오류입니다.')
+   if sum(z['points'] for z in result)!=total:raise ValueError(f'배점 합계 {sum(z["points"] for z in result)}점 ≠ 설정 만점 {total}점')
+   # 공통문항이 기존 선택과목과 다르면 오입력 가능성을 알려 주고 확정을 막음.
+   if sub in ('국어','수학'):
+    common=34 if sub=='국어' else 22
+    for other,otherkey in db['keys'].items():
+     if other.startswith(sub+'|') and other!=k and len(otherkey)==n and otherkey[:common]!=result[:common]:
+      raise ValueError(f'{other}와 1~{common}번 공통 정답·배점이 일치하지 않습니다. 원본을 대조해 주십시오.')
+   db['keys'][k]=result;db.setdefault('key_verified',{})[k]=True;save(db)
+   st.success(f'{choice}: {n}문항, {total}점 정답 등록 완료')
   except Exception as e:st.error(f'저장 불가: {e}')
+ st.divider()
+ st.subheader('③ 과목별 정답 확정 현황')
+ st.dataframe([{'영역·과목':name,'확정 상태':'확정' if db.get('key_verified',{}).get(name) else '미확정','문항수':len(entries),'총 배점':sum((e.get('points') or 0) for e in entries)} for name,entries in db['keys'].items()],hide_index=True,use_container_width=True)
+ st.download_button('확정 정답 백업 JSON 다운로드',json.dumps({'keys':db['keys'],'key_verified':db.get('key_verified',{})},ensure_ascii=False,indent=2).encode('utf-8'),file_name='thepremium-answer-keys.json',mime='application/json')
  st.divider()
  st.subheader('10월 등급컷 검토·수정')
  cut=db['cuts'].get(k)
@@ -371,19 +493,28 @@ elif page=='11월 정답·배점':
    except:st.error('9개 정수, 내림차순, 마지막 값 0으로 입력하십시오.')
 
 elif page=='OMR 판독·검수':
- st.subheader('OMR PDF / 이미지 업로드 → 마킹 판독 → 확인 → 확정')
- st.info('OMR 용지 종류에 따라 답안란 위치가 다릅니다. 처음 한 번 좌표를 조정한 뒤 미리보기로 마킹 중심을 확인하십시오. PDF 텍스트 추출이 아닌 실제 마킹의 명암을 분석합니다.')
- opt=[f"{x['student_number']} | {x['name']}" for x in db['roster']]
- idx=st.selectbox('학생',range(len(opt)),format_func=lambda i:opt[i]);uid=db['roster'][idx]['id']
- subject=st.selectbox('교과 영역',CATS);subject_name=which(subject);n=N[subject_name]
- choice=(db['roster'][idx].get({'국어':'korean','수학':'math','탐구1':'explore1','탐구2':'explore2'}.get(subject,''),'') if subject not in ('영어','한국사') else subject)
- st.caption(f'선택과목: {norm(choice) or "미설정"} / 총 {n}문항')
- uploaded=st.file_uploader('학생 OMR (PDF·PNG·JPG)',type=['pdf','png','jpg','jpeg'])
+ if not db['roster']:st.warning('학생 명부 메뉴에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()
+ st.subheader('① 전체 학생 OMR PDF · 이미지 업로드')
+ st.info('전체 학생의 OMR을 먼저 업로드합니다. PDF의 각 페이지를 확인한 후 아래에서 해당 학생·교과에 연결하십시오. 학생 이름·과목 자동 식별 기능은 아직 없으므로, 잘못된 학생에게 연결되지 않도록 검수해야 합니다.')
+ uploaded=st.file_uploader('전체 학생 OMR 파일 (PDF·PNG·JPG)',type=['pdf','png','jpg','jpeg'],key='all_student_omr')
  if uploaded:
   content=uploaded.getvalue();kind='pdf' if uploaded.name.lower().endswith('.pdf') else 'image'
-  pages=len(fitz.open(stream=content,filetype='pdf')) if kind=='pdf' else 1
-  page_idx=st.number_input('PDF 페이지',min_value=1,max_value=pages,value=1)-1
+  if kind=='pdf':
+   with fitz.open(stream=content,filetype='pdf') as doc: pages=len(doc)
+  else: pages=1
+  st.caption(f'업로드 파일: {uploaded.name} · {pages}페이지')
+  st.subheader('② PDF 페이지 선택 및 학생 · 교과 연결')
+  page_idx=st.number_input('검수할 PDF 페이지',min_value=1,max_value=pages,value=1,key='omr_page_number')-1
   img=encode_page(content,kind,page_idx)
+  rotation=st.selectbox('답안지 방향 보정', [0,90,180,270],format_func=lambda x:f'{x}도 회전',key='omr_rotation')
+  if rotation:img=np.array(Image.fromarray(img).rotate(-rotation,expand=True))
+  st.image(img,caption=f'원본 OMR 미리보기 · {page_idx+1}/{pages}페이지',width=550)
+  opt=[f"{x['student_number']} | {x['name']}" for x in db['roster']]
+  idx=st.selectbox('이 페이지에 해당하는 학생',range(len(opt)),format_func=lambda i:opt[i]);uid=db['roster'][idx]['id']
+  subject=st.selectbox('이 페이지의 교과 영역',CATS);subject_name=which(subject);n=N[subject_name]
+  choice=(db['roster'][idx].get({'국어':'korean','수학':'math','탐구1':'explore1','탐구2':'explore2'}.get(subject,''),'') if subject not in ('영어','한국사') else subject)
+  st.caption(f'선택과목: {norm(choice) or "미설정"} / 총 {n}문항')
+  st.subheader('③ 마킹 판독 → 답안 검수 · 확정')
   base=db['layout'].get(subject,{'x':.22,'y':.16,'w':.50,'h':.72,'columns':1,'colgap':.02,'rows':n,'radius':.27,'threshold':.25,'margin':.09})
   with st.expander('OMR 위치 보정',expanded=True):
    st.caption('x/y: 첫 번째 답안 묶음 왼쪽 위, w/h: 한 묶음의 너비/높이. 여러 열은 열당 문항수와 열간 간격을 설정합니다.')
@@ -408,26 +539,29 @@ elif page=='OMR 판독·검수':
     db['results'].setdefault(uid,{})[subject]={'answers':result,'review':'검수중','source':uploaded.name,'page':int(page_idx+1)}
     save(db);st.success('검수표로 가져왔습니다. 바로 아래에서 답안을 확인하고 확정하십시오.')
   except Exception as e:st.error(f'판독 실패: {e}')
- rec=db['results'].setdefault(uid,{}).setdefault(subject,{})
- original=rec.get('answers',['']*n)
- if len(original)!=n:original=['']*n
- st.subheader('학생 답안 검수 · 정오답')
- st.caption('문항번호 순서대로 학생 기입값을 입력하십시오. 미표기/복수 표기는 빈칸으로 남기고 검수합니다. 수학 단답형에는 숫자를 입력할 수 있습니다.')
- editable=st.text_area('학생답안 (쉼표로 구분, 빈칸 허용)',','.join(str(v) for v in original),height=105,key=f'edit_{uid}_{subject}_{len(original)}')
- if st.button('검수 완료 · 답안 확정',type='primary'):
-  v=[x.strip() for x in editable.split(',')]
-  if len(v)!=n:st.error(f'{n}개 답안이 필요합니다. 현재 {len(v)}개입니다.')
-  else:
-   rec.update({'answers':v,'review':'확정','source':rec.get('source','직접 검수')});save(db);st.success('답안 확정 및 자동 재채점 완료')
- r=scored(db,uid,subject)
- if r['ready']:
-  st.metric('원점수',f"{r['score']}점",f"10월 대비 기준 {r['grade']}등급" if r['grade'] else '등급컷 미등록')
-  def chunks(seq,n=10):return [seq[i:i+n] for i in range(0,len(seq),n)]
-  for p,ans in enumerate(chunks(r['answers'])):
-   o=p*10;cor=r['correct'][o:o+10];st.table([dict(zip(['구분']+[str(i) for i in range(o+1,o+len(ans)+1)],['학생답안']+ans)),dict(zip(['구분']+[str(i) for i in range(o+1,o+len(ans)+1)],['정오답']+cor))])
- else:st.caption('답안 검수 확정 및 해당 과목의 검증된 정답·배점 등록 후 점수와 등급을 표시합니다.')
+  rec=db['results'].setdefault(uid,{}).setdefault(subject,{})
+  original=rec.get('answers',['']*n)
+  if len(original)!=n:original=['']*n
+  st.subheader('학생 답안 검수 · 정오답')
+  st.caption('문항번호 순서대로 학생 기입값을 입력하십시오. 미표기/복수 표기는 빈칸으로 남기고 검수합니다. 수학 단답형에는 숫자를 입력할 수 있습니다.')
+  editable=st.text_area('학생답안 (쉼표로 구분, 빈칸 허용)',','.join(str(v) for v in original),height=105,key=f'edit_{uid}_{subject}_{len(original)}')
+  if st.button('검수 완료 · 답안 확정',type='primary'):
+   v=[x.strip() for x in editable.split(',')]
+   if len(v)!=n:st.error(f'{n}개 답안이 필요합니다. 현재 {len(v)}개입니다.')
+   else:
+    rec.update({'answers':v,'review':'확정','source':rec.get('source','직접 검수')});save(db);st.success('답안 확정 및 자동 재채점 완료')
+  r=scored(db,uid,subject)
+  if r['ready']:
+   st.metric('원점수',f"{r['score']}점",f"10월 대비 기준 {r['grade']}등급" if r['grade'] else '등급컷 미등록')
+   def chunks(seq,n=10):return [seq[i:i+n] for i in range(0,len(seq),n)]
+   for p,ans in enumerate(chunks(r['answers'])):
+    o=p*10;cor=r['correct'][o:o+10];st.table([dict(zip(['구분']+[str(i) for i in range(o+1,o+len(ans)+1)],['학생답안']+ans)),dict(zip(['구분']+[str(i) for i in range(o+1,o+len(ans)+1)],['정오답']+cor))])
+  else:st.caption('답안 검수 확정 및 해당 과목의 검증된 정답·배점 등록 후 점수와 등급을 표시합니다.')
+ else:
+  st.caption('먼저 전체 학생 OMR 파일을 업로드하십시오. 그 다음 PDF 페이지와 학생·교과를 연결할 수 있습니다.')
 
 elif page=='학생 성적표':
+ if not db['roster']:st.warning('학생 명부 메뉴에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()
  st.subheader('성적표 조회 · 인쇄')
  opts=[f"{x['student_number']} | {x['name']}" for x in db['roster']]
  i=st.selectbox('학생 선택',range(len(opts)),format_func=lambda x:opts[x]);stu=db['roster'][i];uid=stu['id']
@@ -435,7 +569,7 @@ elif page=='학생 성적표':
  for sub in CATS:
   r=scored(db,uid,sub);rows.append({'영역':sub,'선택과목':r.get('choice'),'11월 원점수':r.get('score'),'11월 잠정등급':r.get('grade'),'검수':r.get('review')})
  st.dataframe(rows,hide_index=True,use_container_width=True)
- st.subheader('월별 등급 변화 (3·5·7·8·9·10·11월)')
+ st.subheader('대성THE프리미엄모의고사 응시 월별 등급 변화')
  history=[]
  for month in MONTHS:
   row={'월':month}
@@ -489,4 +623,4 @@ elif page=='설정·로고·백업':
    new=json.loads(restore.getvalue().decode());assert all(k in new for k in ['roster','history','results','keys','cuts'])
    st.session_state.db=new;save(new);st.success('복원 완료. 화면을 새로고침하십시오.')
   except Exception as e:st.error(f'복원 실패: {e}')
- st.info('로컬 실행: 모든 데이터는 이 노트북의 data/work.json에 저장됩니다. 주기적으로 JSON 백업 파일을 외장 저장장치에 보관하십시오.')
+ st.warning('Streamlit Community Cloud의 data/work.json은 서버 재시작 시 사라질 수 있으며 안전한 영구 저장소가 아닙니다. 매 작업 후 JSON 백업을 내려받고 개인정보 취급 규정을 준수하십시오.')
