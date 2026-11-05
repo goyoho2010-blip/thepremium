@@ -1,5 +1,5 @@
 """2026 11월 대성 THE PREMIUM | OMR·월별 등급 성적표"""
-import io, json, os, re, zipfile, csv, base64
+import io, json, os, re, zipfile, csv, base64, copy
 from pathlib import Path
 from datetime import datetime
 import numpy as np
@@ -14,6 +14,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.colors import HexColor
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
+from template_omr import read_omr
 
 ROOT=Path(__file__).resolve().parent
 REFERENCE_ZIP=ROOT/'reference'/'november-answers.zip'
@@ -122,7 +123,11 @@ def get_state():
  return st.session_state.db
 
 def save(db):
+ # 테스트 모드는 서버 파일을 변경하지 않습니다. 테스트 데이터는 현재 로그인 세션의 메모리에서만 관리됩니다.
+ if st.session_state.get('test_mode', False):
+  return
  STORAGE.write_text(json.dumps(db,ensure_ascii=False,indent=2),encoding='utf8')
+
 
 def encode_page(b,kind='pdf',page=0,dpi=160):
  if kind=='pdf':
@@ -210,7 +215,7 @@ def small_chart(c,values,x,y,width,height,subject):
   px=x+i*width/6;py=y+height-(g-1)/8*height;c.setFillColor(HexColor('#166C90'));c.circle(px,py,2.2,fill=1,stroke=0)
   c.setFillColor(HexColor('#111827'));c.drawCentredString(px,py+5,str(g))
 
-def render_pdf(db,uid,include_answers=True):
+def render_pdf(db,uid,include_answers=True,test_mode=False):
  ensure_korean_pdf_font()
  stu=next(z for z in db['roster'] if z['id']==uid)
  buff=io.BytesIO();c=canvas.Canvas(buff,pagesize=(595.28,841.89))
@@ -233,6 +238,10 @@ def render_pdf(db,uid,include_answers=True):
   c.setFont(FONTNAME,10);c.drawCentredString(297.64,727,'(자체 정산 · 10월 성적 대비 잠정등급)')
   text(40,696,f"학생명  {stu['name']}     학교  {stu.get('school') or '미입력'}     학년  {stu.get('grade') or '고3'}",10)
   line(684)
+  if test_mode:
+   c.setFont(FONTNAME,9)
+   c.setFillColor(HexColor('#B45309'))
+   c.drawRightString(554,805,'[테스트용 · 실제 성적 아님]')
  def footer():
   line(63)
   logo_or_text('대성학력개발연구소',167,20,185,38,'대성  |  대성학력개발연구소')
@@ -280,8 +289,12 @@ def render_pdf(db,uid,include_answers=True):
    footer()
  c.save();return buff.getvalue()
 
-def export_xlsx(db):
+def export_xlsx(db,test_mode=False):
  wb=Workbook();ss=wb.active;ss.title='11월성적'
+ if test_mode:
+  note=wb.create_sheet('테스트안내',0)
+  note['A1']='테스트 모드 출력: 실제 성적이 아닙니다. 학생 배포 금지'
+  note.column_dimensions['A'].width=70
  ss.append(['학생번호','학생명','학교','학년','국어선택','국어점수','국어잠정등급','수학선택','수학점수','수학잠정등급','영어점수','영어등급','한국사등급','탐구1등급','탐구2등급'])
  for stu in db['roster']:
   uid=stu['id'];r={q:scored(db,uid,q) for q in CATS}
@@ -373,14 +386,42 @@ if not st.session_state.get('authorized',False):
    st.session_state.authorized=True;st.rerun()
   else:st.error('비밀번호를 확인하십시오.')
  st.stop()
-db=get_state()
+# 운영/테스트 데이터 완전 분리: 테스트에서는 운영 DB를 복제만 하고 저장하지 않습니다.
+production_db=get_state()
+mode=st.sidebar.radio('운영 모드', ['실제 운영', '테스트 모드'], key='operating_mode')
+test_mode=(mode=='테스트 모드')
+if st.session_state.get('previous_operating_mode') != mode:
+ for k in ('pdf_zip','result_xlsx','all_student_omr'):
+  st.session_state.pop(k,None)
+ st.session_state.previous_operating_mode=mode
+st.session_state.test_mode=test_mode
+if test_mode:
+ if 'test_db' not in st.session_state:
+  st.session_state.test_db=copy.deepcopy(production_db)
+ db=st.session_state.test_db
+ st.sidebar.warning('테스트 전용: 변경·채점 내용은 실제 성적에 저장되지 않습니다.')
+ if st.sidebar.button('테스트 데이터 전체 초기화', use_container_width=True, type='secondary'):
+  # 저장되지 않은 테스트 답안, 테스트 정답, 판독설정과 PDF 캐시를 모두 삭제합니다.
+  st.session_state.test_db=copy.deepcopy(production_db)
+  for k in ('pdf_zip','result_xlsx','all_student_omr'):
+   st.session_state.pop(k,None)
+  st.rerun()
+else:
+ db=production_db
+ st.sidebar.success('실제 운영 데이터: 테스트 기록과 분리됨')
 if db.get('settings',{}).get('title')=='11월 대성THE프리미엄 모의고사 성적':
  db['settings']['title']='대성THE프리미엄 모의고사 성적 [11월]'
 st.title('11월 대성 THE PREMIUM | OMR 성적처리 NAVI')
+if test_mode:
+ st.error('🧪 테스트 모드 — 샘플 OMR을 판독하고 PDF까지 확인할 수 있으나, 실제 11월 성적에는 반영되지 않습니다. 결과는 세션 종료 시 사라집니다.')
+else:
+ st.info('실제 운영 모드 — 확정된 답안과 정답, 성적을 운영 데이터에 저장합니다.')
 st.caption('Streamlit Cloud 배포판 · 2026년 11월 고3 · OMR 판독 / 검수 / 10월 기준 잠정 등급 / 월별 변화 / PDF 인쇄 및 파일 저장')
 st.warning('11월 전국 공동 채점 결과가 아닙니다. 10월 원점수 등급컷을 11월에 적용한 비공식 참고 성적이며 시험 난이도 차이는 보정하지 않습니다.')
 page=st.sidebar.radio('메뉴',['11월 정답·배점','학생 명부','OMR 판독·검수','학생 성적표','일괄 인쇄·저장','설정·로고·백업'])
-if st.sidebar.button('현재 수정사항 저장',use_container_width=True):save(db);st.sidebar.success('작업 파일에 저장했습니다.')
+if st.sidebar.button('현재 수정사항 저장',use_container_width=True):
+ if test_mode:st.sidebar.info('테스트 중에는 서버 저장을 하지 않습니다. 입력값은 현재 세션에서만 유지됩니다.')
+ else:save(db);st.sidebar.success('운영 작업 파일에 저장했습니다.')
 
 if page=='학생 명부':
  st.subheader('3월~10월 성적 엑셀 연결 명부')
@@ -495,7 +536,7 @@ elif page=='11월 정답·배점':
 elif page=='OMR 판독·검수':
  if not db['roster']:st.warning('학생 명부 메뉴에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()
  st.subheader('① 전체 학생 OMR PDF · 이미지 업로드')
- st.info('전체 학생의 OMR을 먼저 업로드합니다. PDF의 각 페이지를 확인한 후 아래에서 해당 학생·교과에 연결하십시오. 학생 이름·과목 자동 식별 기능은 아직 없으므로, 잘못된 학생에게 연결되지 않도록 검수해야 합니다.')
+ st.info('전체 학생의 OMR을 먼저 업로드합니다. PDF의 각 페이지를 확인한 후 아래에서 해당 학생·교과에 연결하십시오. 5종 OMR 기준 양식으로 답안 좌표를 자동 정렬합니다. 학생 이름·교과의 자동 식별은 아직 보장할 수 없으므로 PDF 페이지와 학생을 반드시 확인하십시오.')
  uploaded=st.file_uploader('전체 학생 OMR 파일 (PDF·PNG·JPG)',type=['pdf','png','jpg','jpeg'],key='all_student_omr')
  if uploaded:
   content=uploaded.getvalue();kind='pdf' if uploaded.name.lower().endswith('.pdf') else 'image'
@@ -506,39 +547,46 @@ elif page=='OMR 판독·검수':
   st.subheader('② PDF 페이지 선택 및 학생 · 교과 연결')
   page_idx=st.number_input('검수할 PDF 페이지',min_value=1,max_value=pages,value=1,key='omr_page_number')-1
   img=encode_page(content,kind,page_idx)
-  rotation=st.selectbox('답안지 방향 보정', [0,90,180,270],format_func=lambda x:f'{x}도 회전',key='omr_rotation')
-  if rotation:img=np.array(Image.fromarray(img).rotate(-rotation,expand=True))
-  st.image(img,caption=f'원본 OMR 미리보기 · {page_idx+1}/{pages}페이지',width=550)
+  rotation=0  # 기준 양식과의 특징점 매칭으로 방향 자동 보정
+  with st.expander('원본 OMR 페이지 보기',expanded=False):
+   st.image(img,caption=f'원본 OMR · {page_idx+1}/{pages}페이지',width=550)
   opt=[f"{x['student_number']} | {x['name']}" for x in db['roster']]
   idx=st.selectbox('이 페이지에 해당하는 학생',range(len(opt)),format_func=lambda i:opt[i]);uid=db['roster'][idx]['id']
   subject=st.selectbox('이 페이지의 교과 영역',CATS);subject_name=which(subject);n=N[subject_name]
   choice=(db['roster'][idx].get({'국어':'korean','수학':'math','탐구1':'explore1','탐구2':'explore2'}.get(subject,''),'') if subject not in ('영어','한국사') else subject)
   st.caption(f'선택과목: {norm(choice) or "미설정"} / 총 {n}문항')
-  st.subheader('③ 마킹 판독 → 답안 검수 · 확정')
-  base=db['layout'].get(subject,{'x':.22,'y':.16,'w':.50,'h':.72,'columns':1,'colgap':.02,'rows':n,'radius':.27,'threshold':.25,'margin':.09})
-  with st.expander('OMR 위치 보정',expanded=True):
-   st.caption('x/y: 첫 번째 답안 묶음 왼쪽 위, w/h: 한 묶음의 너비/높이. 여러 열은 열당 문항수와 열간 간격을 설정합니다.')
-   c1,c2,c3,c4=st.columns(4)
-   conf=dict(base)
-   for param,col in [('x',c1),('y',c2),('w',c3),('h',c4)]:conf[param]=col.slider(param,0.01,0.98,float(base[param]),0.005)
-   c1,c2,c3,c4=st.columns(4)
-   conf['columns']=c1.number_input('문항 묶음 열 수',1,6,int(base.get('columns',1)))
-   conf['rows']=c2.number_input('열당 문항 수',1,50,int(base.get('rows',n)))
-   conf['colgap']=c3.slider('열 사이 간격',0.,.3,float(base.get('colgap',.02)),.005)
-   conf['radius']=c4.slider('판독 반경',.1,.45,float(base.get('radius',.27)),.01)
-   c1,c2=st.columns(2)
-   conf['threshold']=c1.slider('마킹 검출 민감도',.05,.9,float(base.get('threshold',.25)),.01)
-   conf['margin']=c2.slider('중복 마킹 차이값',.01,.5,float(base.get('margin',.09)),.01)
-  try:
-   result,stats=interpret_omr(img,conf,n,NCHOICES[subject_name]);st.image(outline(img,conf,n,NCHOICES[subject_name]),caption='파란 원 = 각 답안 후보의 판독 중심점 (설정값을 조정하여 실제 마킹에 맞추십시오)',use_container_width=True)
-   alerts=[x for x in stats if x['status']!='정상']
-   st.write(f'1차 자동판독: 정상 {n-len(alerts)}개 / **검수 필요 {len(alerts)}개**')
-   if alerts:st.dataframe(alerts,use_container_width=True)
-   db['layout'][subject]=conf
-   if st.button('판독 결과 검수표로 가져오기'):
+  st.subheader('③ 자동판독 → 확인 → 확정')
+  st.info('좌표 조정이 필요 없습니다. 5종 OMR 기준 양식을 사용해 방향과 위치를 자동 보정합니다. 수학 단답형과 불확실한 마킹은 직접 확인해 주세요.')
+  @st.cache_data(show_spinner=False,max_entries=24)
+  def recognize_page(content_bytes,kind_name,page_number,rotation_degrees,subject_code):
+   page_image=encode_page(content_bytes,kind_name,page_number)
+   if rotation_degrees:page_image=np.array(Image.fromarray(page_image).rotate(-rotation_degrees,expand=True))
+   return read_omr(page_image,subject_code)
+  if st.button('이 페이지 OMR 자동판독',type='primary'):
+   try:
+    with st.spinner('답안지 자동 정렬 및 마킹을 판독하고 있습니다.'):
+     result,stats,preview,meta=recognize_page(content,kind,page_idx,rotation,subject)
+    st.session_state.omr_auto_result={'subject':subject,'uid':uid,'page':int(page_idx+1),'file':uploaded.name,'answers':result,'stats':stats,'preview':preview,'meta':meta}
+   except Exception as e:
+    st.error(f'자동판독 실패: {e}')
+  auto=st.session_state.get('omr_auto_result')
+  if auto and auto.get('subject')==subject and auto.get('uid')==uid and auto.get('page')==page_idx+1 and auto.get('file')==uploaded.name:
+   meta=auto['meta'];stats=auto['stats'];result=auto['answers']
+   n_ok=sum(x['상태']=='정상' for x in stats)
+   st.success(f'자동 정렬 완료 · 판독 {n_ok}문항 / 검수 필요 {len(stats)-n_ok}문항 · 방향 보정 {meta["rotation"]}°')
+   st.image(auto['preview'],caption='판독 위치 자동 정렬 결과 · 파란 원은 답안 위치, 초록 원은 자동 판독된 답안',use_container_width=True)
+   needs=[x for x in stats if x['상태']!='정상']
+   if needs:
+    st.warning(f'확인이 필요한 문항 {len(needs)}개입니다. 실제 답안지와 비교하여 검수해 주세요.')
+    st.dataframe(needs,hide_index=True,use_container_width=True)
+   else:st.caption('모든 객관식 문항이 정상 판독되었습니다. 답안 검수 후 확정하십시오.')
+   if st.button('자동판독 답안을 검수표로 가져오기'):
     db['results'].setdefault(uid,{})[subject]={'answers':result,'review':'검수중','source':uploaded.name,'page':int(page_idx+1)}
-    save(db);st.success('검수표로 가져왔습니다. 바로 아래에서 답안을 확인하고 확정하십시오.')
-  except Exception as e:st.error(f'판독 실패: {e}')
+    save(db)
+    st.success('답안 검수표에 반영했습니다. 아래에서 확인 후 확정하세요.')
+    st.rerun()
+  elif not auto:
+   st.caption('자동판독 버튼을 누르면 기준 OMR 양식에 맞춰 자동으로 위치가 정렬됩니다.')
   rec=db['results'].setdefault(uid,{}).setdefault(subject,{})
   original=rec.get('answers',['']*n)
   if len(original)!=n:original=['']*n
@@ -580,8 +628,8 @@ elif page=='학생 성적표':
  # native chart uses numerical missing values
  st.line_chart({sub:[r[sub] for r in history] for sub in ['국어','수학','영어','탐구1','탐구2']},height=260)
  show_ans=st.checkbox('성적표에 교과별 답안/정오답 추가 페이지 포함',value=True)
- b=render_pdf(db,uid,show_ans)
- st.download_button('학생별 A4 PDF 저장 · 인쇄',b,file_name=f"11월더프_성적표_{stu['name']}.pdf",mime='application/pdf',type='primary')
+ b=render_pdf(db,uid,show_ans,test_mode=test_mode)
+ st.download_button('학생별 A4 PDF 저장 · 인쇄',b,file_name=f"thepremium-{'TEST-' if test_mode else ''}{stu['name']}.pdf",mime='application/pdf',type='primary')
  st.caption('PDF를 다운로드한 뒤 PDF 뷰어에서 Ctrl+P로 바로 인쇄하실 수 있습니다.')
 
 elif page=='일괄 인쇄·저장':
@@ -595,16 +643,16 @@ elif page=='일괄 인쇄·저장':
   else:
    z=io.BytesIO()
    with zipfile.ZipFile(z,'w',zipfile.ZIP_DEFLATED) as archive:
-    for s in filtered:archive.writestr(f"{s['student_number']}_{s['name']}.pdf",render_pdf(db,s['id'],include))
+    for s in filtered:archive.writestr(f"{s['student_number']}_{s['name']}.pdf",render_pdf(db,s['id'],include,test_mode=test_mode))
    st.session_state['pdf_zip']=z.getvalue()
  if st.session_state.get('pdf_zip'):
-  st.download_button('학생별 PDF ZIP 저장',st.session_state['pdf_zip'],file_name='thepremium-reports.zip',mime='application/zip')
+  st.download_button('학생별 PDF ZIP 저장',st.session_state['pdf_zip'],file_name='thepremium-test-reports.zip' if test_mode else 'thepremium-reports.zip',mime='application/zip')
  if st.button('전체 결과 엑셀 생성'):
   try:
-   b=export_xlsx(db);st.session_state['result_xlsx']=b
+   b=export_xlsx(db,test_mode=test_mode);st.session_state['result_xlsx']=b
   except Exception as e:st.error(f'엑셀 생성 실패: {e}')
  if st.session_state.get('result_xlsx'):
-  st.download_button('성적 집계 + 월별 등급 엑셀 저장',st.session_state['result_xlsx'],file_name='thepremium-results.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  st.download_button('성적 집계 + 월별 등급 엑셀 저장',st.session_state['result_xlsx'],file_name='thepremium-test-results.xlsx' if test_mode else 'thepremium-results.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 elif page=='설정·로고·백업':
  st.subheader('기관 로고 및 성적표 머리말·꼬리말')
@@ -616,9 +664,12 @@ elif page=='설정·로고·백업':
  db['settings']['title']=st.text_input('성적표 제목',db['settings'].get('title',''))
  if st.button('제목 저장'):save(db);st.success('저장했습니다.')
  st.divider();st.subheader('백업 및 복원')
- st.download_button('모든 결과·명부·정답·설정 JSON 백업',json.dumps(db,ensure_ascii=False,indent=2).encode(),file_name='더프11월_전체백업.json',mime='application/json')
- restore=st.file_uploader('기존 JSON 백업 불러오기',type=['json'])
- if restore and st.button('백업 복원 실행'):
+ if test_mode:
+  st.info('테스트 모드의 데이터는 운영 백업에 포함되지 않습니다. 운영 백업·복원은 실제 운영 모드에서만 수행하십시오.')
+ else:
+  st.download_button('모든 결과·명부·정답·설정 JSON 백업',json.dumps(db,ensure_ascii=False,indent=2).encode(),file_name='thepremium-backup.json',mime='application/json')
+ restore=st.file_uploader('기존 JSON 백업 불러오기',type=['json'],disabled=test_mode)
+ if restore and not test_mode and st.button('백업 복원 실행'):
   try:
    new=json.loads(restore.getvalue().decode());assert all(k in new for k in ['roster','history','results','keys','cuts'])
    st.session_state.db=new;save(new);st.success('복원 완료. 화면을 새로고침하십시오.')
