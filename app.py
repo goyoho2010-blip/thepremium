@@ -12,8 +12,8 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.colors import HexColor
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from template_omr import read_omr
 
 ROOT=Path(__file__).resolve().parent
@@ -180,10 +180,15 @@ def scored(db,uid,subject):
  roster=next((x for x in db['roster'] if x['id']==uid),None)
  if roster is None:return None
  prop={'국어':'korean','수학':'math','탐구1':'explore1','탐구2':'explore2','영어':None,'한국사':None}[subject]
- choice=norm(roster.get(prop,'')) if prop else subject
  rec=db['results'].get(uid,{}).get(subject,{})
+ choice=norm(rec.get('choice') or (roster.get(prop,'') if prop else subject))
  answers=rec.get('answers',[]); key=answer_key(db,subject,choice)
  n=N[which(subject)]
+ if rec.get('manual_score') is not None and rec.get('review')=='확정':
+  manual=int(rec['manual_score'])
+  ceiling=50 if subject.startswith('탐구') or subject=='한국사' else 100
+  if 0<=manual<=ceiling:
+   return {'choice':choice,'answers':answers,'correct':[], 'score':manual, 'grade':grade_of(subject,choice,manual,db['cuts']), 'ready':True,'review':'확정(점수수정)','key':key}
  if (subject in ('국어','수학','탐구1','탐구2') and not choice) or len(key)!=n or not db.get('key_verified',{}).get(which(subject)+'|'+norm(choice),False) or any(str(k.get('answer','')).strip()=='' or not isinstance(k.get('points'),int) or k['points']<=0 for k in key):
   return {'choice':choice,'answers':answers,'correct':[],'score':None,'grade':None,'ready':False,'review':rec.get('review','미채점'),'key':key}
  if not answers or len(answers)!=n or rec.get('review')!='확정':
@@ -191,7 +196,7 @@ def scored(db,uid,subject):
  correct=[];total=0
  for a,k in zip(answers,key):
   ok=str(a).strip()==str(k['answer']).strip() if str(a).strip() else False
-  correct.append('○' if ok else '×' if a else '—')
+  correct.append('○' if ok else '×')  # 미표기 역시 오답·0점
   if ok:total+=k['points']
  return {'choice':choice,'answers':answers,'correct':correct,'score':total,'grade':grade_of(subject,choice,total,db['cuts']),'ready':True,'review':'확정','key':key}
 
@@ -295,10 +300,10 @@ def export_xlsx(db,test_mode=False):
   note=wb.create_sheet('테스트안내',0)
   note['A1']='테스트 모드 출력: 실제 성적이 아닙니다. 학생 배포 금지'
   note.column_dimensions['A'].width=70
- ss.append(['학생번호','학생명','학교','학년','국어선택','국어점수','국어잠정등급','수학선택','수학점수','수학잠정등급','영어점수','영어등급','한국사등급','탐구1등급','탐구2등급'])
+ ss.append(['학생번호','학생명','전화번호','11월 수험번호','학교','학년','국어선택','국어점수','국어잠정등급','수학선택','수학점수','수학잠정등급','영어점수','영어등급','한국사등급','탐구1등급','탐구2등급'])
  for stu in db['roster']:
   uid=stu['id'];r={q:scored(db,uid,q) for q in CATS}
-  ss.append([stu.get('student_number'),stu['name'],stu.get('school',''),stu.get('grade','고3'),r['국어']['choice'],r['국어']['score'],r['국어']['grade'],r['수학']['choice'],r['수학']['score'],r['수학']['grade'],r['영어']['score'],r['영어']['grade'],r['한국사']['grade'],r['탐구1']['grade'],r['탐구2']['grade']])
+  ss.append([stu.get('student_number'),stu['name'],stu.get('phone',''),stu.get('exam_number',''),stu.get('school',''),stu.get('grade','고3'),r['국어']['choice'],r['국어']['score'],r['국어']['grade'],r['수학']['choice'],r['수학']['score'],r['수학']['grade'],r['영어']['score'],r['영어']['grade'],r['한국사']['grade'],r['탐구1']['grade'],r['탐구2']['grade']])
  hs=wb.create_sheet('월별등급변화');hs.append(['학생번호','학생명','교과',*MONTHS])
  for stu in db['roster']:
   for sub in CATS:
@@ -314,6 +319,123 @@ def export_xlsx(db,test_mode=False):
    sheet.column_dimensions[letter].width=18
  out=io.BytesIO();wb.save(out);return out.getvalue()
 
+
+
+# 하나의 시트가 11월 정정의 유일한 입력원입니다. 다른 시트는 열람만 가능합니다.
+EXCEL_COLUMNS=['적용(Y)','내부학생ID','학생명','전화번호','수험번호','학교','영역','11월 응시과목','검수상태','원점수(참고)','점수직접수정(선택)','수정사유','판독파일','PDF쪽']+[f'{i}번' for i in range(1,46)]
+def phone_digits(v):return re.sub(r'\D','',str(v or ''))
+def text_id(v):
+ if v is None:return ''
+ if isinstance(v,(int,float)) and float(v).is_integer():return str(int(v))
+ return str(v).strip()
+def editable_workbook(db,test_mode=False):
+ wb=Workbook();ws=wb.active;ws.title='답안수정'
+ ws.append(EXCEL_COLUMNS)
+ for stu in db['roster']:
+  uid=stu['id']
+  for sub in CATS:
+   r=db.get('results',{}).get(uid,{}).get(sub,{})
+   sr=scored(db,uid,sub)
+   answers=list(r.get('answers',[]))
+   answers=(answers+['']*45)[:45]
+   ws.append(['Y' if r.get('review')=='확정' else '',uid,stu.get('name',''),stu.get('phone',''),stu.get('exam_number') or stu.get('student_number',''),stu.get('school',''),sub,r.get('choice') or sr.get('choice') or '',r.get('review','미등록'),sr.get('score'),r.get('manual_score'),r.get('manual_reason',''),r.get('source',''),r.get('page','')]+answers)
+ ws.freeze_panes='O2';ws.auto_filter.ref=ws.dimensions
+ ws.row_dimensions[1].height=33
+ for c in ws[1]:c.fill=PatternFill('solid',fgColor='123A56');c.font=Font(name='맑은 고딕',size=10,bold=True,color='FFFFFF');c.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
+ widths={'A':12,'B':22,'C':14,'D':20,'E':17,'F':18,'G':13,'H':22,'I':15,'J':17,'K':21,'L':25,'M':23,'N':10}
+ for key,value in widths.items():ws.column_dimensions[key].width=value
+ for col in range(15,60):ws.column_dimensions[ws.cell(1,col).column_letter].width=8
+ for row in ws.iter_rows(min_row=2):
+  for cell in row:
+   cell.font=Font(name='맑은 고딕',size=10)
+   if cell.column in (1,8,11,12) or cell.column>=15:cell.fill=PatternFill('solid',fgColor='FFF6D8')
+  row[3].number_format='@';row[4].number_format='@'
+ guide=wb.create_sheet('사용안내');instructions=[
+  'thepremium · 답안 수정 업로드 안내',
+  '1. 수정할 시트는 오직 「답안수정」입니다. 다른 시트는 편집하지 마십시오.',
+  '2. OMR 판독 완료 시 엑셀 업로드는 필요하지 않습니다.',
+  '3. 수정할 학생·영역 행의 적용(Y) 칸에 Y를 입력합니다. 빈칸 행은 가져오지 않습니다.',
+  '4. 1번~45번 칸의 답안을 수정합니다. 미표기는 빈칸을 유지하며 0점(오답) 처리됩니다.',
+  '5. 수학 단답형은 해당 문항에 숫자 전체를 입력합니다.',
+  '6. 11월 응시과목이 이전 과목과 달라도 「11월 응시과목」을 올바르게 선택해 정산합니다.',
+  '7. 원점수 자체를 변경해야 하는 예외 상황에는 점수직접수정(선택)에 수치를 적고 수정사유를 필수 입력합니다.',
+  '8. 점수직접수정에 값이 있으면 답안 채점점수 대신 입력 점수로 10월 컷 잠정등급을 계산합니다. 정오답 표시는 직접 수정점수와 별개입니다.',
+  '9. 점수직접수정을 해제하려면 빈칸으로 만들고 답안·정답 기준 재채점을 합니다.',
+  '10. 학생명은 반드시 일치해야 하며 전화번호/수험번호는 보조 식별키입니다. 동명이인·번호 충돌은 거부합니다.',
+  '11. 3~10월 기록은 수정되지 않습니다. 11월 성적만 변경됩니다.',
+  '12. 업로드 전 JSON 백업을 내려받고, 검증 결과 확인 후 적용하십시오.',
+  '13. 이 파일에는 개인정보가 포함될 수 있으므로 공개 GitHub에 업로드하지 마십시오.',
+ ]
+ for item in instructions:guide.append([item])
+ guide.column_dimensions['A'].width=125
+ guide['A1'].font=Font(name='맑은 고딕',size=14,bold=True,color='123A56')
+ for i in range(2,len(instructions)+1):guide.cell(i,1).font=Font(name='맑은 고딕',size=11)
+ if test_mode:guide.append(['테스트 모드에서 내보낸 파일은 실제 운영용이 아닙니다.'])
+ out=io.BytesIO();wb.save(out);return out.getvalue()
+
+def _find_student(db,uid,name,phone,exam):
+ name=str(name or '').strip();phone=phone_digits(phone);exam=text_id(exam)
+ if not name:raise ValueError('학생명 누락')
+ students=[s for s in db['roster'] if str(s.get('name','')).strip()==name]
+ if not students:raise ValueError(f'명부에 없는 학생명: {name}')
+ if uid:
+  students=[s for s in students if s['id']==uid]
+  if not students:raise ValueError(f'학생 ID/이름 불일치: {name} ({uid})')
+ if phone:
+  with_phone=[s for s in students if phone_digits(s.get('phone'))==phone]
+  if with_phone:students=with_phone
+  elif any(phone_digits(s.get('phone')) for s in students):raise ValueError(f'전화번호 불일치: {name}')
+ if exam:
+  with_exam=[s for s in students if exam in (text_id(s.get('exam_number')),text_id(s.get('student_number')))]
+  if with_exam:students=with_exam
+  elif any(text_id(s.get('exam_number')) for s in students):raise ValueError(f'수험번호 불일치: {name}')
+ if len(students)!=1:raise ValueError(f'동명이인/식별정보 충돌: {name} (확인 필요 {len(students)}명)')
+ return students[0]
+
+def parse_corrections(db,content):
+ wb=load_workbook(io.BytesIO(content),read_only=True,data_only=True)
+ if '답안수정' not in wb.sheetnames:raise ValueError('「답안수정」 시트가 없습니다.')
+ ws=wb['답안수정'];headers=[str(c.value or '').strip() for c in next(ws.iter_rows(min_row=1,max_row=1))]
+ if headers[:len(EXCEL_COLUMNS)]!=EXCEL_COLUMNS:raise ValueError('열 제목 또는 순서가 바뀌었습니다. 원본 수정용 엑셀을 사용하십시오.')
+ changes=[];errors=[];seen=set()
+ for idx,row in enumerate(ws.iter_rows(min_row=2,values_only=True),start=2):
+  if str(row[0] or '').strip().upper() not in ('Y','YES','1','적용'):continue
+  try:
+   uid,name,phone,exam,school,sub,choice=(row[i] if i<len(row) else None for i in (1,2,3,4,5,6,7))
+   stu=_find_student(db,str(uid or '').strip(),name,phone,exam)
+   sub=str(sub or '').strip()
+   if sub not in CATS:raise ValueError('교과/영역이 잘못되었습니다')
+   key=(stu['id'],sub)
+   if key in seen:raise ValueError('동일 학생·영역이 두 번 입력되었습니다')
+   seen.add(key)
+   choice=norm(choice)
+   if sub not in ('영어','한국사') and choice not in OPTIONS['탐구' if sub.startswith('탐구') else sub]:raise ValueError('11월 선택과목이 유효하지 않습니다')
+   if sub in ('영어','한국사'):choice=sub
+   n=N[which(sub)];answers=[]
+   for q in range(n):
+    raw=row[14+q] if 14+q<len(row) else None
+    val=text_id(raw)
+    if sub=='수학' and q+1 in list(range(16,23))+[29,30]:
+     if val and (not val.isdigit() or len(val)>3):raise ValueError(f'{q+1}번 단답형은 0~999 숫자만 입력')
+    elif val and val not in ('1','2','3','4','5'):raise ValueError(f'{q+1}번 객관식 답안은 1~5 또는 빈칸')
+    answers.append(val)
+   manual=row[10] if len(row)>10 else None
+   reason=str(row[11] or '').strip() if len(row)>11 else ''
+   if manual not in (None,''):
+    try:
+     mm=float(manual)
+     if not mm.is_integer():raise ValueError()
+     manual=int(mm)
+    except:raise ValueError('점수직접수정은 정수만 가능합니다')
+    maxscore=50 if sub.startswith('탐구') or sub=='한국사' else 100
+    if not 0<=manual<=maxscore:raise ValueError(f'점수직접수정 범위는 0~{maxscore}점')
+    if not reason:raise ValueError('직접 점수 수정 시 수정사유 필수')
+   else:manual=None
+   existing=db.get('results',{}).get(stu['id'],{}).get(sub,{})
+   record=dict(existing,answers=answers,choice=choice,review='확정',source='엑셀 답안수정',manual_score=manual,manual_reason=reason)
+   changes.append({'학생':name,'학교':stu.get('school',''),'영역':sub,'11월선택':choice,'수정문항':sum(a!=b for a,b in zip(answers,(existing.get('answers',[])+['']*n)[:n])),'점수직접수정':manual if manual is not None else '-','uid':stu['id'],'record':record})
+  except Exception as ex:errors.append(f'{idx}행: {ex}')
+ return changes,errors
 
 # 기존 3~10월 성적 엑셀 재등록 — 공개 GitHub 저장소에는 학생 자료를 넣지 않습니다.
 def import_history_excel(content):
@@ -334,7 +456,7 @@ def import_history_excel(content):
    uid=f'{num}|{name}'  # 번호 충돌 시 별개 학생 보호
    school=str(row[5] or '').strip()
    id_names[num].add(name)
-   if uid not in roster:roster[uid]={'id':uid,'student_number':num,'name':name,'school':school,'grade':'고3'}
+   if uid not in roster:roster[uid]={'id':uid,'student_number':num,'exam_number':num,'phone':'','name':name,'school':school,'grade':'고3'}
    elif school and not roster[uid].get('school'):roster[uid]['school']=school
    def score(i):
     v=row[i] if i<len(row) else None
@@ -366,6 +488,11 @@ def install_history(db,record):
  # 과거 OMR 검수 결과는 학생번호+이름이 정확히 일치하는 인원에만 유지
  allowed={s['id'] for s in record['roster']}
  db['results']={uid:r for uid,r in db.get('results',{}).items() if uid in allowed}
+ old={x['id']:x for x in db.get('roster',[])}
+ for st_ in record['roster']:
+  prev=old.get(st_['id'],{})
+  for field in ('phone','exam_number'):
+   if prev.get(field):st_[field]=prev[field]
  db['roster']=record['roster'];db['history']=record['history']
  return len(allowed)
 
@@ -418,7 +545,7 @@ else:
  st.info('실제 운영 모드 — 확정된 답안과 정답, 성적을 운영 데이터에 저장합니다.')
 st.caption('Streamlit Cloud 배포판 · 2026년 11월 고3 · OMR 판독 / 검수 / 10월 기준 잠정 등급 / 월별 변화 / PDF 인쇄 및 파일 저장')
 st.warning('11월 전국 공동 채점 결과가 아닙니다. 10월 원점수 등급컷을 11월에 적용한 비공식 참고 성적이며 시험 난이도 차이는 보정하지 않습니다.')
-page=st.sidebar.radio('메뉴',['11월 정답·배점','학생 명부','OMR 판독·검수','학생 성적표','일괄 인쇄·저장','설정·로고·백업'])
+page=st.sidebar.radio('메뉴',['11월 정답·배점','학생 명부','OMR 판독·검수','엑셀 답안수정','학생 성적표','일괄 인쇄·저장','설정·로고·백업'])
 if st.sidebar.button('현재 수정사항 저장',use_container_width=True):
  if test_mode:st.sidebar.info('테스트 중에는 서버 저장을 하지 않습니다. 입력값은 현재 세션에서만 유지됩니다.')
  else:save(db);st.sidebar.success('운영 작업 파일에 저장했습니다.')
@@ -445,6 +572,9 @@ if page=='학생 명부':
  stu=db['roster'][selected]
  a,b,c=st.columns(3)
  stu['name']=a.text_input('학생명',stu['name']);stu['school']=b.text_input('학교',stu.get('school',''));stu['grade']=c.text_input('학년',stu.get('grade','고3'))
+ a,b=st.columns(2)
+ stu['phone']=a.text_input('전화번호(학생 식별용)',stu.get('phone',''),key='phone_'+stu['id'])
+ stu['exam_number']=b.text_input('11월 수험번호(학생 식별용)',str(stu.get('exam_number') or stu.get('student_number') or ''),key='exam_'+stu['id'])
  for k,label,opts in [('korean','국어',OPTIONS['국어']),('math','수학',OPTIONS['수학']),('explore1','탐구Ⅰ',OPTIONS['탐구']),('explore2','탐구Ⅱ',OPTIONS['탐구'])]:
   previous=norm(stu.get(k,''));options=['']+opts
   stu[k]=st.selectbox(label,options,index=options.index(previous) if previous in options else 0,key='choice_'+k)
@@ -537,9 +667,9 @@ elif page=='OMR 판독·검수':
  if not db['roster']:
   st.warning('학생 명부 메뉴에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()
  st.subheader('① 교과별 OMR PDF 일괄 업로드')
- st.info('시험 종료 후 교과별 PDF를 각각 올리십시오. 예: 국어 PDF 20쪽 = 학생 20명의 국어 답안지. PDF의 모든 페이지를 한 번에 판독합니다. 학생명은 페이지별로 확인하여 연결합니다.')
+ st.info('교과별 PDF 전체 자동판독 후 학생명·수험번호·전화번호로 매칭합니다. OMR 필기값을 신뢰할 수 없으면 화면에서 확인한 정보를 입력해 연결합니다.')
  subject_group=st.selectbox('업로드할 교과 영역',['국어','수학','영어','한국사','탐구'],key='subject_batch_group')
- st.caption('탐구는 한 페이지의 탐구Ⅰ·탐구Ⅱ를 모두 판독합니다. 수학 단답형은 별도 확인이 필요합니다.')
+ st.caption('탐구는 한 페이지의 탐구Ⅰ·탐구Ⅱ를 모두 판독합니다. 수학 단답형 9문항은 자동 후보를 제시하지만 반드시 원본 대조가 필요합니다.')
  uploaded=st.file_uploader(f'{subject_group} OMR 묶음 PDF (여러 학생의 답안지가 들어 있는 파일)',type=['pdf','png','jpg','jpeg'],key='all_student_omr')
  if uploaded is not None:
   content=uploaded.getvalue()
@@ -566,7 +696,7 @@ elif page=='OMR 판독·검수':
        answers,diagnostics,preview,meta=read_omr(img,sub)
        results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':answers,
                        'stats':diagnostics,'rotation':meta.get('rotation',0),
-                       'error':'','reviewed':False,'student_id':'','suspect':meta.get('suspect',False),'detected':meta.get('detected',0)})
+                       'error':'','reviewed':False,'student_id':'','suspect':meta.get('suspect',False),'detected':meta.get('detected',0),'explore_code':meta.get('explore_code'),'explore_name':meta.get('explore_name',''),'explore_code_confident':meta.get('explore_code_confident',False)})
       except Exception as exc:
        results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':['']*N[which(sub)],
                        'stats':[],'rotation':None,'error':str(exc),'reviewed':False,'student_id':'','suspect':True,'detected':0})
@@ -587,7 +717,7 @@ elif page=='OMR 판독·검수':
    summary=[]
    for i,r in enumerate(rows):
     ok=sum(x.get('상태')=='정상' for x in r['stats'])
-    summary.append({'번호':i+1,'PDF 페이지':r['page'],'교과':LABEL.get(r['subject'],r['subject']),
+    summary.append({'번호':i+1,'PDF 페이지':r['page'],'교과':LABEL.get(r['subject'],r['subject'])+(' / '+r.get('explore_name','') if r.get('explore_code_confident') else ''),
                     '자동 판독':f'{ok}/{len(r["answers"])}',
                     '확인 필요':len(r['answers'])-ok,
                     '상태':'실패' if r['error'] else ('재판독/확인 필요' if r.get('suspect') else ('검수완료' if r['reviewed'] else '검수대기'))})
@@ -599,8 +729,21 @@ elif page=='OMR 판독·검수':
    indices=[i for i,r in enumerate(rows) if r['page']==chosen_page]
    existing=next((rows[i]['student_id'] for i in indices if rows[i].get('student_id')),'')
    selected_index=next((j+1 for j,v in enumerate(roster) if v['id']==existing),0)
+   st.caption('학생명은 우선 확인하며, 동명이인은 전화번호 또는 수험번호로 구별합니다. 필기된 연락처를 자동으로 읽었다고 가정하지 않습니다.')
+   match_a,match_b,match_c=st.columns(3)
+   entered_name=match_a.text_input('OMR 학생명',key=f'match_name_{chosen_page}_{fingerprint[:8]}')
+   entered_phone=match_b.text_input('전화번호(선택)',key=f'match_phone_{chosen_page}_{fingerprint[:8]}')
+   entered_exam=match_c.text_input('수험번호(선택)',key=f'match_exam_{chosen_page}_{fingerprint[:8]}')
+   widget_key=f'subject_student_{chosen_page}_{fingerprint[:8]}_{subject_group}'
+   if st.button('입력한 이름·전화번호·수험번호로 학생 찾기',key=f'match_btn_{chosen_page}_{fingerprint[:8]}'):
+    try:
+     matched=_find_student(db,'',entered_name,entered_phone,entered_exam)
+     selected_index=next(j+1 for j,item in enumerate(roster) if item['id']==matched['id'])
+     st.session_state[widget_key]=selected_index
+     st.success(f'학생 매칭: {matched["name"]} / {matched.get("school", "")}')
+    except Exception as ex:st.error('매칭 실패: '+str(ex))
    selected=st.selectbox(f'{chosen_page}페이지 학생',range(len(labels)),index=selected_index,
-                         format_func=lambda j:labels[j],key=f'subject_student_{chosen_page}_{fingerprint[:8]}_{subject_group}')
+                         format_func=lambda j:labels[j],key=widget_key)
    selected_uid=roster[selected-1]['id'] if selected else ''
    # 페이지 하나는 학생 한 명의 OMR: 탐구 두 선택과목에도 같은 학생 ID를 적용합니다.
    for i in indices:
@@ -615,6 +758,30 @@ elif page=='OMR 판독·검수':
    for i in indices:
     r=rows[i]
     st.markdown(f'**{chosen_page}페이지 · {LABEL.get(r["subject"],r["subject"])}**')
+    if r['subject'] in ('탐구1','탐구2'):
+     field='explore1' if r['subject']=='탐구1' else 'explore2'
+     student=next((a for a in roster if a['id']==selected_uid),None)
+     roster_choice=norm(student.get(field,'')) if student else ''
+     auto_name=r.get('explore_name','') if r.get('explore_code_confident') else ''
+     st.info(f'탐구 과목: OMR 코드 {r.get("explore_code") if auto_name else "판독 불확실"} / 자동 후보 {auto_name or "확인 필요"} / 학생 명부 {roster_choice or "미연결"}')
+     if auto_name and roster_choice and auto_name!=roster_choice:
+      st.info('이전 선택과목과 다릅니다. 11월 응시과목을 우선 적용하며 채점을 차단하지 않습니다.')
+     if auto_name and not roster_choice:
+      st.info('OMR에서 읽은 11월 선택과목을 사용할 수 있습니다.')
+    # 11월 응시과목은 이전 3~10월 선택과목과 독립적으로 보관합니다.
+    old_student=next((a for a in roster if a['id']==selected_uid),None)
+    pickfield={'국어':'korean','수학':'math','탐구1':'explore1','탐구2':'explore2'}.get(r['subject'])
+    oldchoice=norm(old_student.get(pickfield,'')) if old_student and pickfield else r['subject']
+    detected_choice=norm(r.get('explore_name','')) if r['subject'].startswith('탐구') and r.get('explore_code_confident') else ''
+    default_choice=norm(r.get('choice') or detected_choice or oldchoice)
+    choices=OPTIONS['탐구' if r['subject'].startswith('탐구') else r['subject']]
+    if r['subject'] in ('영어','한국사'):r['choice']=r['subject']
+    else:
+     r['choice']=st.selectbox('11월 실제 응시 선택과목 ('+LABEL.get(r['subject'],r['subject'])+')',['']+choices,
+       index=(['']+choices).index(default_choice) if default_choice in choices else 0,
+       key=f'actual_choice_{i}_{fingerprint[:8]}')
+     if oldchoice and r['choice'] and oldchoice!=r['choice']:
+      st.caption(f'이전 선택과목: {oldchoice} → 11월 선택과목: {r["choice"]} (11월 기준으로 정산)')
     if r['error']:st.error('자동판독 실패: '+r['error'])
     if r.get('suspect') and not r['error']:
      st.error('자동 판독한 답안 수가 지나치게 적습니다. OMR 정렬 또는 채점 원 위치가 틀릴 가능성이 있으므로 이 결과를 그대로 확정할 수 없습니다. 아래 정렬 미리보기를 확인해 주십시오.')
@@ -630,7 +797,7 @@ elif page=='OMR 판독·검수':
      try:
       im=encode_page(content,kind,r['page']-1)
       ans,stats,_,meta=read_omr(im,r['subject'])
-      r.update(answers=ans,stats=stats,rotation=meta.get('rotation'),error='',reviewed=False,suspect=meta.get('suspect',False),detected=meta.get('detected',0))
+      r.update(answers=ans,stats=stats,rotation=meta.get('rotation'),error='',reviewed=False,suspect=meta.get('suspect',False),detected=meta.get('detected',0),explore_code=meta.get('explore_code'),explore_name=meta.get('explore_name',''),explore_code_confident=meta.get('explore_code_confident',False))
       st.rerun()
      except Exception as e:st.error(str(e))
     if r['stats']:
@@ -639,6 +806,7 @@ elif page=='OMR 판독·검수':
       st.warning(f'재확인이 필요한 문항 {len(uncertain)}개 (수학 단답형 포함)')
       st.dataframe(uncertain,use_container_width=True,hide_index=True)
      else:st.caption('자동 판독 후보는 모두 정상 판정되었습니다. 실제 OMR과 대조하십시오.')
+     if r['subject'].startswith('탐구') and any(t.get('상태')=='미표기' for t in r['stats']):st.caption('탐구 미표기는 정답과 무관하게 0점 처리됩니다. 원본에 표시가 없는지 반드시 확인하십시오.')
     edited=st.text_area('판독 답안 (쉼표로 구분, 미표기=빈칸)',value=','.join(map(str,r['answers'])),
                         key=f'subject_edit_{i}_{r["subject"]}_{fingerprint[:8]}',height=95)
     parsed=[x.strip() for x in edited.split(',')]
@@ -651,9 +819,15 @@ elif page=='OMR 판독·검수':
      r['answers']=parsed
      if r.get('suspect'):
       st.checkbox('원본과 1번부터 마지막 문항까지 직접 대조했고 필요한 답안을 수정했습니다.',key=f'manual_verified_{i}_{fingerprint[:8]}')
+     math_short_checked = True
+     if r['subject']=='수학':
+      math_short_checked=st.checkbox('수학 단답형 16~22번·29~30번의 자리별 마킹을 원본과 대조했습니다.',key=f'math_digits_checked_{i}_{fingerprint[:8]}')
      if st.button('이 교과 검수 완료',key=f'subject_review_{i}_{fingerprint[:8]}'):
       if not selected_uid:st.error('학생을 먼저 선택하십시오.')
       elif r['error']:st.error('자동판독 오류를 해결하거나 재판독하십시오.')
+      elif r['subject'] not in ('영어','한국사') and not r.get('choice'):
+       st.error('11월 응시 선택과목을 지정하십시오.')
+      elif not math_short_checked:st.error('수학 단답형 9문항을 원본과 대조한 후 검수 완료 처리하십시오.')
       elif r.get('suspect') and not st.session_state.get(f'manual_verified_{i}_{fingerprint[:8]}',False):
        st.error('오검출 가능성이 커서 원본 마킹을 직접 대조했다는 확인이 필요합니다. 아래 체크박스를 먼저 선택하십시오.')
       else:r['reviewed']=True;st.success('검수 완료 — 아직 저장되지 않았습니다.')
@@ -672,7 +846,7 @@ elif page=='OMR 판독·검수':
     existing_count=sum(bool(db['results'].get(r['student_id'],{}).get(r['subject'])) for r in ready)
     for r in ready:
      newresults.setdefault(r['student_id'],{})[r['subject']]={
-      'answers':list(r['answers']),'review':'확정','source':uploaded.name,'page':r['page']}
+      'answers':list(r['answers']),'review':'확정','choice':r.get('choice') or r['subject'],'source':uploaded.name,'page':r['page']}
     db['results']=newresults;save(db)
     st.success(f'{subject_group} 답안 {len(ready)}건 저장 완료 (기존 기록 대체 {existing_count}건).')
     if test_mode:st.info('테스트 모드 — 실제 운영 데이터에는 반영되지 않았습니다.')
@@ -680,6 +854,36 @@ elif page=='OMR 판독·검수':
     st.info('다음 교과 PDF를 처리하려면 현재 파일을 제거하고 상단에서 다음 교과를 선택하여 업로드하십시오.')
   else:st.caption('「전체 자동판독」 버튼을 클릭하십시오.')
  else:st.caption('교과를 선택한 뒤 PDF를 업로드하십시오.')
+
+elif page=='엑셀 답안수정':
+ st.subheader('11월 OMR 판독 결과 · 엑셀 선택 수정')
+ st.info('기본은 OMR 자동판독입니다. 답안·점수를 정정해야 하는 경우에만 이 메뉴에서 엑셀을 내려받아 수정하고 다시 업로드하십시오. 기존 성적표 양식은 변경되지 않습니다.')
+ st.markdown('**수정할 시트: `답안수정` (한 곳에서만 수정)**')
+ if not db['roster']:
+  st.warning('학생 명부가 없습니다. 먼저 3~10월 이력 엑셀을 등록하십시오.');st.stop()
+ st.download_button('thepremium-답안수정.xlsx 내려받기',data=editable_workbook(db,test_mode=test_mode),file_name='thepremium-answer-edit.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',type='primary')
+ st.caption('시트의 노란 칸만 수정하십시오. 변경할 행의 「적용(Y)」에 Y를 입력해야 업로드 시 반영됩니다. 빈칸 행은 변경되지 않습니다.')
+ uploaded_fix=st.file_uploader('수정한 엑셀 업로드 (.xlsx)',type=['xlsx'],key='excel_answer_correction')
+ if uploaded_fix:
+  try:
+   import hashlib
+   token=hashlib.sha256(uploaded_fix.getvalue()).hexdigest()
+   changes,errors=parse_corrections(db,uploaded_fix.getvalue())
+   if errors:
+    st.error(f'검증 오류 {len(errors)}건 — 수정 사항을 적용하지 않습니다.')
+    for e in errors[:40]:st.write(e)
+   else:
+    st.success(f'검증 통과 · 정산 예정 {len(changes)}개 학생·교과 기록')
+    st.dataframe([{k:v for k,v in change.items() if k not in ('uid','record')} for change in changes],hide_index=True,use_container_width=True)
+    st.caption('3~10월 등급은 그대로 두며, 11월 해당 교과만 갱신합니다. 이전 선택과목과 달라도 현재 응시과목을 적용합니다.')
+    checked=st.checkbox('원본 OMR과 수정 답안을 대조했으며, 해당 11월 결과만 덮어쓰는 데 동의합니다.',key='excel_apply_check_'+token[:10])
+    if st.button('검증 완료 · 11월 답안/성적 다시 정산',disabled=not checked or not changes,type='primary'):
+     newresults=copy.deepcopy(db['results'])
+     for change in changes:newresults.setdefault(change['uid'],{})[change['영역']]=change['record']
+     db['results']=newresults;save(db)
+     st.success(f'{len(changes)}개 교과 기록 갱신 완료. 성적표와 월별 등급 변화가 새 값으로 계산됩니다.')
+  except Exception as e:st.error(f'수정 엑셀 검사 실패: {e}')
+ st.warning('운영 데이터는 Streamlit 서버 재시작 시 사라질 수 있으니 적용 후 「설정·로고·백업」에서 JSON 백업을 반드시 내려받으십시오. 학생정보가 담긴 엑셀을 공개 GitHub에 올리지 마십시오.')
 
 elif page=='학생 성적표':
  if not db['roster']:st.warning('학생 명부 메뉴에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()

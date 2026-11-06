@@ -79,34 +79,113 @@ def _features_align(img,ref):
     return aligned,{'matched':matched,'inliers':inliers,'rotation':turns*90,'inlier_ratio':round(score,3)}
 
 def _score_at(rgb, gray, ref_gray, x, y):
-    """Assess a filled bubble with tolerance for imperfect scanner registration.
+    """Sample a whole answer bubble using local template subtraction.
 
-    Uses a central disk (not the printed red oval edge), scans +/- 3 px,
-    and requires neutral dark ink or local darkening relative to the blank form.
+    Prefer dark neutral graphite over printed red rings; use small offset
+    tolerance but keep each measurement isolated from adjoining bubbles.
     """
-    h, w = gray.shape
-    cx, cy = int(round(x)), int(round(y))
-    if not (9 <= cx < w-9 and 9 <= cy < h-9):
-        return 0.0
-    # On this form, the five bubble centers are ~15 px apart. The search
-    # radius must remain small enough not to touch a neighboring answer.
-    best = 0.0
-    yy, xx = np.ogrid[-3:4, -3:4]
-    disk = (xx*xx + yy*yy) <= 10
-    for dy in (-3, -1, 0, 1, 3):
-        for dx in (-3, -1, 0, 1, 3):
-            y0, x0 = cy+dy, cx+dx
-            pix = rgb[y0-3:y0+4, x0-3:x0+4][disk].astype(np.float32)
-            lum = gray[y0-3:y0+4, x0-3:x0+4][disk].astype(np.float32)
-            ref = ref_gray[cy-3:cy+4, cx-3:cx+4][disk].astype(np.float32)
-            # Dark pencil is nearly neutral. The printed red rings have a
-            # strong chromatic component and are not counted as pencil fill.
-            neutral = (pix.max(axis=1)-pix.min(axis=1)) < 55
-            dark = np.mean((lum < 155) & neutral)
-            delta = np.mean((ref-lum > 52) & (lum < 185))
-            score = max(dark, 0.85*delta)
-            best = max(best, float(score))
+    h,w=gray.shape;cx,cy=round(x),round(y)
+    if not (9<cx<w-9 and 9<cy<h-9):return 0.
+    yy,xx=np.ogrid[-4:5,-4:5]
+    mask=(xx*xx+yy*yy<=13)
+    best=0.
+    for dy in (-2,0,2):
+        for dx in (-2,0,2):
+            px=rgb[cy+dy-4:cy+dy+5,cx+dx-4:cx+dx+5][mask].astype(np.float32)
+            lum=gray[cy+dy-4:cy+dy+5,cx+dx-4:cx+dx+5][mask].astype(np.float32)
+            blank=ref_gray[cy-4:cy+5,cx-4:cx+5][mask].astype(np.float32)
+            neutral=px.max(1)-px.min(1)<58
+            dark=np.mean((lum<156)&neutral)
+            new_ink=np.mean((blank-lum>46)&(lum<190)&neutral)
+            best=max(best,float(max(dark,.92*new_ink)))
     return best
+
+# Mathematics short-answer fields: q16–22,29–30. On this OMR each
+# three-digit field has hundreds/tens/ones columns. A blank digit column
+# is NOT the same as a marked zero. All extracted numbers require review.
+_MATH_DIGIT_X = {
+    16: (688, 703, 718), 17: (752, 767, 782),
+    18: (815, 830, 845), 19: (879, 894, 909),
+    20: (943, 958, 973), 21: (688, 703, 718),
+    22: (752, 767, 782), 29: (896, 911, 927),
+    30: (958, 974, 989),
+}
+
+def _math_digit_centers(question):
+    # Digit centers at 0 through 9. The upper row is y=109;
+    # the lower set (21,22,29,30) starts at y=468.
+    y0 = 109 if question <= 20 else 468
+    return [[(x, y0 + k*31.2) for k in range(10)]
+            for x in _MATH_DIGIT_X[question]]
+
+def _digit_ink(rgb, gray, ref_gray, x, y):
+    """Candidate strength for one 0–9 digit, with scan drift tolerance."""
+    cx,cy=round(x),round(y);h,w=gray.shape
+    if cx<9 or cy<9 or cx>=w-9 or cy>=h-9:return 0.
+    yy,xx=np.ogrid[-4:5,-4:5];mask=xx*xx+yy*yy<=11
+    best=0.
+    for dy in (-2,0,2):
+        for dx in (-2,0,2):
+            lum=gray[cy+dy-4:cy+dy+5,cx+dx-4:cx+dx+5][mask].astype('float32')
+            base=ref_gray[cy-4:cy+5,cx-4:cx+5][mask].astype('float32')
+            rgb_roi=rgb[cy+dy-4:cy+dy+5,cx+dx-4:cx+dx+5][mask].astype('float32')
+            neutral=(rgb_roi.max(1)-rgb_roi.min(1))<60
+            new=np.mean((base-lum>38)&(lum<180)&neutral)
+            dark=np.mean((lum<137)&neutral)
+            best=max(best,float(max(new,.70*dark)))
+    return best
+
+def _digit_candidate(rgb, gray, ref_gray, question):
+    columns = []
+    for centers in _math_digit_centers(question):
+        vals = [_digit_ink(rgb, gray, ref_gray, x, y) for x,y in centers]
+        idx = np.argsort(vals)[::-1]
+        high, low = float(vals[idx[0]]),float(vals[idx[1]])
+        if high >= .27 and high-low >= .12:
+            columns.append((str(int(idx[0])), '후보'))
+        elif high < .16:
+            columns.append(('', '공란'))
+        else:
+            columns.append(('', '불확실'))
+    if any(state=='불확실' for _,state in columns):
+        return '', '단답형 판독 불확실'
+    digits=''.join(value for value,_ in columns)
+    if not digits:
+        return '', '단답형 미표기'
+    # A gap between marked columns is ambiguous, and a marked 0 is distinct
+    # from an empty column. Reject malformed digit alignment.
+    started=False;gap=False
+    for value,_ in columns:
+        if value: 
+            if gap:return '', '단답형 자리검수 필요'
+            started=True
+        elif started:gap=True
+    return str(int(digits)), '단답형 자동후보·검수 필수'
+
+# THE PREMIUM 탐구 과목코드: 20 물리Ⅰ, 21 화학Ⅰ, 22 생명과학Ⅰ,
+# 23 지구과학Ⅰ. Do not label a candidate as verified without clear marks.
+SCIENCE_CODE={20:'물리학Ⅰ',21:'화학Ⅰ',22:'생명과학Ⅰ',23:'지구과학Ⅰ',
+              24:'물리학Ⅱ',25:'화학Ⅱ',26:'생명과학Ⅱ',27:'지구과학Ⅱ'}
+
+def exploration_subject_candidate(aligned, subject):
+    """Read the two-digit 탐구 과목코드 with conservative confidence.
+
+    The selector is *not* the 1–20 multiple-choice bubble block. Returns
+    (code, label, confident), or (None,'',False) if incomplete/ambiguous.
+    """
+    if subject not in ('탐구1','탐구2'):return None,'',False
+    gray=cv2.cvtColor(aligned,cv2.COLOR_RGB2GRAY)
+    refgray=cv2.cvtColor(_ref(subject),cv2.COLOR_RGB2GRAY)
+    # selector's two-digit lanes left of each answer block, 0...9 vertically
+    xs=(550,566) if subject=='탐구1' else (852,868)
+    out=[]
+    for x in xs:
+        values=[_digit_ink(aligned,gray,refgray,x,266+31.2*k) for k in range(10)]
+        inds=np.argsort(values)[::-1];a,b=int(inds[0]),int(inds[1])
+        if values[a]<.29 or values[a]-values[b]<.16:return None,'',False
+        out.append(str(a))
+    code=int(''.join(out))
+    return code,SCIENCE_CODE.get(code,''),bool(code in SCIENCE_CODE)
 
 def read_omr(image,subject):
     ref=_ref(subject)
@@ -122,13 +201,22 @@ def read_omr(image,subject):
     preview=aligned.copy()
     for q in range(1,n+1):
         if q not in centers:
-            diagnostics.append({'문항':q,'판독답안':'','상태':'단답형 수동 확인','최고마킹':0.,'차이':0.})
+            if subject=='수학' and q in _MATH_DIGIT_X:
+                candidate,status=_digit_candidate(aligned,gray,ref_gray,q)
+                answers[q-1]=candidate
+                for digit_col in _math_digit_centers(q):
+                    for x,y in digit_col:
+                        cv2.circle(preview,(round(x),round(y)),3,(255,150,0),1,cv2.LINE_AA)
+                diagnostics.append({'문항':q,'판독답안':candidate,'상태':status,
+                                    '최고마킹':0.,'차이':0.})
+            else:
+                diagnostics.append({'문항':q,'판독답안':'','상태':'판독영역 없음',
+                                    '최고마킹':0.,'차이':0.})
             continue
         vals=[_score_at(aligned,gray,ref_gray,*p) for p in centers[q]]
         order=sorted(range(5),key=lambda i:vals[i],reverse=True)
         top,second=order[:2]
         strongest,gap=vals[top],vals[top]-vals[second]
-        # Dark-ink evidence is explicit; ambiguous marks never become answers.
         if strongest>=.30 and gap>=.13:
             status='정상';answers[q-1]=str(top+1)
         elif strongest<.18:
@@ -141,11 +229,15 @@ def read_omr(image,subject):
             center=(round(x),round(y))
             color=(0,175,0) if status=='정상' and k==top else (235,75,25) if status!='정상' else (0,165,235)
             cv2.circle(preview,center,5,color,1,cv2.LINE_AA)
+    if subject in ('탐구1','탐구2'):
+        code,label,verified=exploration_subject_candidate(aligned,subject)
+        meta['explore_code']=code
+        meta['explore_name']=label
+        meta['explore_code_confident']=verified
     meta['detected']=sum(bool(a) for a in answers)
     meta['total_auto']=len(centers)
-    meta['uncertain']=sum(row['상태'] not in ('정상','단답형 수동 확인') for row in diagnostics)
-    # A whole page of blank answers is treated as a FAILED reading candidate,
-    # not as an accepted empty response sheet.
-    meta['suspect']=meta['detected']==0 or (meta['detected']/max(len(centers),1)<.55)
+    meta['uncertain']=sum(row['상태']!='정상' for row in diagnostics)
+    meta['suspect']=sum(row['상태']=='정상' for row in diagnostics)/max(len(centers),1)<.55
     meta['aligned_preview']=True
+    meta['math_short_review_required']= subject=='수학'
     return answers,diagnostics,preview,meta
