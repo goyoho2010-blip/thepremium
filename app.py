@@ -487,14 +487,95 @@ def import_history_excel(content):
 def install_history(db,record):
  # 과거 OMR 검수 결과는 학생번호+이름이 정확히 일치하는 인원에만 유지
  allowed={s['id'] for s in record['roster']}
- db['results']={uid:r for uid,r in db.get('results',{}).items() if uid in allowed}
  old={x['id']:x for x in db.get('roster',[])}
+ # 11월 신규 등록자는 기존 3~10월 자료를 갱신해도 유지합니다.
+ newcomers=[copy.deepcopy(x) for x in db.get('roster',[]) if x.get('november_new')]
  for st_ in record['roster']:
   prev=old.get(st_['id'],{})
   for field in ('phone','exam_number'):
    if prev.get(field):st_[field]=prev[field]
+ used={s['id'] for s in record['roster']}
+ for newstu in newcomers:
+  if newstu['id'] not in used:record['roster'].append(newstu)
+ allowed={s['id'] for s in record['roster']}
+ db['results']={uid:r for uid,r in db.get('results',{}).items() if uid in allowed}
  db['roster']=record['roster'];db['history']=record['history']
  return len(allowed)
+
+# 11월 신규 응시자 등록: 3~10월 이력/OMR 결과를 덮어쓰지 않는 추가 명부.
+NEW_ROSTER_COLUMNS=['학생명','학교','학년','11월 수험번호','전화번호','국어 선택','수학 선택','탐구Ⅰ 선택','탐구Ⅱ 선택']
+def november_roster_template():
+ wb=Workbook();ws=wb.active;ws.title='11월신규명부';ws.append(NEW_ROSTER_COLUMNS)
+ for _ in range(25):ws.append(['']*len(NEW_ROSTER_COLUMNS))
+ ws.freeze_panes='A2';ws.auto_filter.ref=f'A1:I26'
+ for cell in ws[1]:
+  cell.fill=PatternFill('solid',fgColor='123A56');cell.font=Font(name='맑은 고딕',bold=True,color='FFFFFF');cell.alignment=Alignment(horizontal='center')
+ for col in 'ABCDEFGHI':ws.column_dimensions[col].width=20
+ ws.column_dimensions['A'].width=16;ws.column_dimensions['B'].width=23
+ for row in ws.iter_rows(min_row=2):
+  row[3].number_format='@';row[4].number_format='@'
+ helpws=wb.create_sheet('사용안내')
+ for line in ['신규 응시자 명부는 「11월신규명부」 시트에서만 작성하십시오.',
+ '학생명·학교·11월 수험번호/전화번호 중 하나 이상을 입력하십시오. 식별정보는 개인정보이므로 외부 공개 금지.',
+ '기존 3~10월 명부와 동일 학생은 별도 신규로 생성하지 않고 연결됩니다.',
+ '동명이인 또는 서로 다른 학생이 동일 전화번호/수험번호를 쓰는 경우 등록하지 않고 오류를 알려줍니다.',
+ '11월에 과목이 변경되어도 이 시트의 응시과목이 우선입니다. OMR에서 실제 과목을 재확인하십시오.',
+ '기존 월별 성적은 바뀌지 않으며 신규학생의 3~10월은 미응시로 표시합니다.']:
+  helpws.append([line])
+ helpws.column_dimensions['A'].width=115
+ out=io.BytesIO();wb.save(out);return out.getvalue()
+
+def parse_november_roster(db,content):
+ wb=load_workbook(io.BytesIO(content),read_only=True,data_only=True)
+ if '11월신규명부' not in wb.sheetnames:raise ValueError('「11월신규명부」 시트가 없습니다.')
+ ws=wb['11월신규명부'];headers=[str(c.value or '').strip() for c in next(ws.iter_rows(max_row=1))]
+ if headers[:9]!=NEW_ROSTER_COLUMNS:raise ValueError('신규명부의 열 제목 또는 순서가 다릅니다.')
+ roster=copy.deepcopy(db['roster']);changed=[];errors=[]
+ for lineno,row in enumerate(ws.iter_rows(min_row=2,values_only=True),2):
+  vals=list(row[:9])+[None]*max(0,9-len(row))
+  if not any(v is not None and str(v).strip() for v in vals):continue
+  try:
+   name,school,grade,exam,phone,korean,math,explore1,explore2=vals[:9]
+   name=str(name or '').strip();school=str(school or '').strip()
+   grade=str(grade or '고3').strip();exam=text_id(exam);phone=phone_digits(phone)
+   if not name:raise ValueError('학생명 필수')
+   if not exam and not phone:raise ValueError('수험번호 또는 전화번호를 하나 이상 입력하십시오')
+   incoming={'korean':norm(korean),'math':norm(math),'explore1':norm(explore1),'explore2':norm(explore2)}
+   for field,kind in [('korean','국어'),('math','수학'),('explore1','탐구'),('explore2','탐구')]:
+    if incoming[field] and incoming[field] not in OPTIONS[kind]:raise ValueError(f'잘못된 {kind} 선택과목: {incoming[field]}')
+   # 번호가 다른 학생에게 연결된 경우 절대 덮어쓰지 않습니다.
+   for other in roster:
+    if other['name']!=name and ((phone and phone==phone_digits(other.get('phone'))) or (exam and exam in (text_id(other.get('exam_number')), text_id(other.get('student_number'))))):
+     raise ValueError(f'전화번호 또는 수험번호가 다른 학생({other["name"]})과 중복됩니다')
+   same=[x for x in roster if x['name']==name]
+   if same:
+    if len(same)>1:
+     same=[x for x in same if (phone and phone==phone_digits(x.get('phone'))) or (exam and exam in (text_id(x.get('exam_number')),text_id(x.get('student_number'))))]
+     if len(same)!=1:raise ValueError('동명이인: 전화번호 또는 수험번호로 학생을 명확히 구분하십시오')
+    stu=same[0]
+    for field,key in [('phone',phone),('exam_number',exam)]:
+     current=phone_digits(stu.get(field)) if field=='phone' else text_id(stu.get(field))
+     # 3~10월 수험번호를 기본값으로 가진 기존 학생은 새로운 11월 수험번호로 갱신 가능.
+     legacy_exam=(field=='exam_number' and current==text_id(stu.get('student_number')))
+     if key and current and current!=key and not legacy_exam:
+      raise ValueError(f'기존 {name}의 {field}과 다릅니다. 명부에서 직접 확인하십시오')
+    if phone:stu['phone']=phone
+    if exam:stu['exam_number']=exam
+    if school:stu['school']=school
+    stu['grade']=grade
+    for field,value in incoming.items():
+     if value:stu[field]=value
+    changed.append({'행':lineno,'학생명':name,'처리':'기존 학생 연결','id':stu['id']})
+   else:
+    import hashlib
+    seed=f'{name}|{exam}|{phone}|{school}'
+    uid='november|'+hashlib.sha256(seed.encode()).hexdigest()[:18]
+    if any(x['id']==uid for x in roster):raise ValueError('신규 ID 중복')
+    stu={'id':uid,'student_number':exam or uid,'exam_number':exam,'phone':phone,'name':name,'school':school,'grade':grade,'november_new':True,**incoming}
+    roster.append(stu)
+    changed.append({'행':lineno,'학생명':name,'처리':'신규 등록','id':uid})
+  except Exception as e:errors.append(f'{lineno}행: {e}')
+ return roster,changed,errors
 
 st.set_page_config(page_title='11월 더프 | 성적처리 NAVI',page_icon='📊',layout='wide')
 # 배포된 앱은 비밀번호가 없으면 학생 개인정보 접근을 차단합니다.
@@ -565,7 +646,27 @@ if page=='학생 명부':
    st.rerun()
   except Exception as e:st.error(f'엑셀 불러오기 실패: {e}')
 
- st.write(f"학생 {len(db['roster'])}명 · 월별 기존 성적이 있는 학생을 통합 관리합니다.")
+ st.divider()
+ st.subheader('11월 신규 응시자 · 엑셀 명부 일괄 등록')
+ st.caption('기존 학생명과 대조하여 연결하고, 신규 학생만 추가합니다. 과거 성적 기록은 변경하지 않습니다.')
+ st.download_button('thepremium-roster.xlsx 양식 다운로드',data=november_roster_template(),file_name='thepremium-roster.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+ added_file=st.file_uploader('11월신규명부 시트가 작성된 엑셀(.xlsx) 업로드',type=['xlsx'],key='november_roster_file')
+ if added_file:
+  try:
+   proposed,summary,issues=parse_november_roster(db,added_file.getvalue())
+   if issues:
+    st.error(f'명부 확인 필요 {len(issues)}건. 오류가 있으면 아무도 등록하지 않습니다.')
+    for issue in issues:st.write(issue)
+   else:
+    st.success(f'명부 검증 통과 · 신규 및 연결 {len(summary)}명')
+    st.dataframe(summary,use_container_width=True,hide_index=True)
+    import hashlib
+    key='apply_roster_'+hashlib.sha256(added_file.getvalue()).hexdigest()[:12]
+    if st.checkbox('학생명·전화번호·수험번호를 대조했습니다.',key=key):
+     if st.button('11월 학생 명부 등록/갱신',type='primary'):
+      db['roster']=proposed;save(db);st.success('11월 명부가 반영되었습니다.');st.rerun()
+  except Exception as e:st.error('신규 명부 오류: '+str(e))
+ st.write(f"학생 {len(db['roster'])}명 · 기존 이력 및 11월 신규 응시자를 통합 관리합니다.")
  if not db['roster']:st.info('위에서 수정 엑셀을 먼저 업로드하십시오.');st.stop()
  names=[f"{a['student_number']} | {a['name']}" for a in db['roster']]
  selected=st.selectbox('수정할 학생',list(range(len(names))),format_func=lambda i:names[i])
@@ -669,7 +770,7 @@ elif page=='OMR 판독·검수':
  st.subheader('① 교과별 OMR PDF 일괄 업로드')
  st.info('교과별 PDF 전체 자동판독 후 학생명·수험번호·전화번호로 매칭합니다. OMR 필기값을 신뢰할 수 없으면 화면에서 확인한 정보를 입력해 연결합니다.')
  subject_group=st.selectbox('업로드할 교과 영역',['국어','수학','영어','한국사','탐구'],key='subject_batch_group')
- st.caption('탐구는 한 페이지의 탐구Ⅰ·탐구Ⅱ를 모두 판독합니다. 수학 단답형 9문항은 자동 후보를 제시하지만 반드시 원본 대조가 필요합니다.')
+ st.caption('탐구는 한 페이지의 탐구Ⅰ·탐구Ⅱ를 별도 판독합니다. 수학 단답형은 세 자리 숫자 마킹을 자동 판독하여 후보를 제시하고, 원본 검수 후 확정합니다. 모든 교과의 미표기는 0점입니다.')
  uploaded=st.file_uploader(f'{subject_group} OMR 묶음 PDF (여러 학생의 답안지가 들어 있는 파일)',type=['pdf','png','jpg','jpeg'],key='all_student_omr')
  if uploaded is not None:
   content=uploaded.getvalue()
@@ -806,7 +907,7 @@ elif page=='OMR 판독·검수':
       st.warning(f'재확인이 필요한 문항 {len(uncertain)}개 (수학 단답형 포함)')
       st.dataframe(uncertain,use_container_width=True,hide_index=True)
      else:st.caption('자동 판독 후보는 모두 정상 판정되었습니다. 실제 OMR과 대조하십시오.')
-     if r['subject'].startswith('탐구') and any(t.get('상태')=='미표기' for t in r['stats']):st.caption('탐구 미표기는 정답과 무관하게 0점 처리됩니다. 원본에 표시가 없는지 반드시 확인하십시오.')
+     if any(str(t.get('상태','')).startswith('미표기') for t in r['stats']):st.caption('전 교과 공통: 실제 미표기는 해당 문항 오답·0점입니다. 답안 수정란에서는 빈칸으로 유지하며, 특히 수학의 숫자 0 마킹과 혼동하지 않습니다.')
     edited=st.text_area('판독 답안 (쉼표로 구분, 미표기=빈칸)',value=','.join(map(str,r['answers'])),
                         key=f'subject_edit_{i}_{r["subject"]}_{fingerprint[:8]}',height=95)
     parsed=[x.strip() for x in edited.split(',')]

@@ -25,7 +25,7 @@ def bubble_centers(subject):
     elif subject == '한국사':
         for q in range(1,21):put(q,660,158+31.25*(q-1))
     elif subject.startswith('탐구'):
-        for q in range(1,21):put(q,898 if subject=='탐구2' else 613,111+31.25*(q-1))
+        for q in range(1,21):put(q,908 if subject=='탐구2' else 613,111+31.25*(q-1))
     elif subject == '수학':
         for q in range(1,9):put(q,408,110+31.25*(q-1))
         for q in range(9,16):put(q,532,110+31.25*(q-9))
@@ -104,11 +104,13 @@ def _score_at(rgb, gray, ref_gray, x, y):
 # three-digit field has hundreds/tens/ones columns. A blank digit column
 # is NOT the same as a marked zero. All extracted numbers require review.
 _MATH_DIGIT_X = {
-    16: (688, 703, 718), 17: (752, 767, 782),
-    18: (815, 830, 845), 19: (879, 894, 909),
-    20: (943, 958, 973), 21: (688, 703, 718),
-    22: (752, 767, 782), 29: (896, 911, 927),
-    30: (958, 974, 989),
+    # 수학 실제 단답형 양식: 문항당 세 자리(백/십/일) 원의 중심.
+    # 상단 16~20과 하단 21~22, 29~30은 인쇄 위치가 각각 다릅니다.
+    16: (704, 720, 735), 17: (767, 782, 798),
+    18: (830, 846, 861), 19: (894, 910, 925),
+    20: (957, 973, 989), 21: (657, 673, 688),
+    22: (720, 735, 751), 29: (896, 911, 927),
+    30: (958, 974, 990),
 }
 
 def _math_digit_centers(question):
@@ -220,7 +222,7 @@ def read_omr(image,subject):
         if strongest>=.30 and gap>=.13:
             status='정상';answers[q-1]=str(top+1)
         elif strongest<.18:
-            status='미표기'
+            status='미표기(0점)' 
         else:
             status='중복/불확실'
         diagnostics.append({'문항':q,'판독답안':answers[q-1],'상태':status,
