@@ -437,6 +437,131 @@ def parse_corrections(db,content):
   except Exception as ex:errors.append(f'{idx}행: {ex}')
  return changes,errors
 
+# 원본 정답 통합 엑셀: 국어/수학 공통과 선택을 결합한 후 채점기에 등록합니다.
+KEY_FILE=ROOT/'reference'/'thepremium-answers-11.xlsx'
+def parse_november_keys(contents):
+ workbook=load_workbook(io.BytesIO(contents),read_only=True,data_only=True)
+ if '정답통합' not in workbook.sheetnames:raise ValueError('「정답통합」 시트가 없습니다.')
+ rows=list(workbook['정답통합'].iter_rows(min_row=2,values_only=True))
+ groups={}
+ for vals in rows:
+  if not vals or vals[0] is None:continue
+  sub=str(vals[0]).strip();choice=str(vals[1]).strip();q=int(vals[3]);ans=text_id(vals[4]);points=int(vals[5]);
+  if not ans or points<=0:raise ValueError(f'{sub} {choice} {q}번 정답/배점 오류')
+  groups.setdefault((sub,choice),{})[q]={'question':q,'answer':ans,'points':points}
+ results={}
+ for sub,options in [('국어',OPTIONS['국어']),('수학',OPTIONS['수학'])]:
+  common=groups.get((sub,'공통'),{})
+  for choice in options:
+   selection=groups.get((sub,choice),{})
+   combined={**common,**selection};n=N[sub]
+   if sorted(combined)!=list(range(1,n+1)):
+    raise ValueError(f'{sub} {choice} 문항번호 누락/중복')
+   key=[combined[i] for i in range(1,n+1)]
+   if sum(x['points'] for x in key)!=100:raise ValueError(f'{sub} {choice} 배점합계 오류')
+   results[f'{sub}|{choice}']=key
+ for sub,choice in groups:
+  if sub in ('국어','수학'):continue
+  target='탐구' if sub in ('탐구','사회탐구','과학탐구') else sub
+  if target=='탐구':name=norm(choice)
+  elif target in ('영어','한국사'):name=target
+  else:continue
+  keydata=groups[(sub,choice)];n=N[target]
+  if sorted(keydata)!=list(range(1,n+1)):raise ValueError(f'{target} {name} 문항번호 오류')
+  key=[keydata[i] for i in range(1,n+1)]
+  limit=50 if target in ('한국사','탐구') else 100
+  if sum(x['points'] for x in key)!=limit:raise ValueError(f'{target} {name} 배점합계 오류')
+  results[f'{target}|{name}']=key
+ return results
+
+# OMR 검수는 단일 엑셀 파일의 「판독검수」 시트에서만 수행합니다.
+REVIEW_FIELDS=['검수확인(Y)','PDF쪽','영역','OMR이름후보','확정학생명','전화번호','수험번호','OMR선택과목후보','11월확정선택과목','판독상태','원본파일','처리(Y/제외)']+[f'{q}번' for q in range(1,46)]+['선택과목정정사유']
+
+def batch_review_excel(rows,source_name):
+ wb=Workbook();ws=wb.active;ws.title='판독검수';ws.append(REVIEW_FIELDS)
+ for r in rows:
+  n=N[which(r['subject'])];candidate=norm(r.get('explore_name') if r['subject'].startswith('탐구') else r.get('selection_choice'))
+  if r['subject'] in ('영어','한국사'):candidate=r['subject']
+  vals=[str(v or '') for v in (r.get('answers',[]) + ['']*45)[:45]]
+  ws.append(['',r['page'],r['subject'],r.get('name_candidate',''),r.get('name_candidate',''),'','',candidate,candidate,
+    '판독실패: '+r['error'] if r.get('error') else '확인필요' if r.get('suspect') else '자동판독',source_name,'Y']+vals+[''])
+ ws.freeze_panes='M2';ws.auto_filter.ref=ws.dimensions
+ ws.row_dimensions[1].height=32
+ for cell in ws[1]:cell.fill=PatternFill('solid',fgColor='17324D');cell.font=Font(name='맑은 고딕',bold=True,color='FFFFFF');cell.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
+ for letter in 'ABCDEFGHIJKL':ws.column_dimensions[letter].width=19 if letter in 'DEGHIJK' else 14
+ ws.column_dimensions['K'].width=34
+ for col in range(13,58):ws.column_dimensions[ws.cell(1,col).column_letter].width=8
+ ws.column_dimensions['BF'].width=35
+ for row in ws.iter_rows(min_row=2):
+  for cell in row:
+   cell.font=Font(name='맑은 고딕',size=10)
+   if cell.column in (1,5,6,7,9,12) or cell.column>=13:cell.fill=PatternFill('solid',fgColor='FFF2C7')
+  row[5].number_format='@';row[6].number_format='@'
+ guide=wb.create_sheet('검수안내')
+ for line in [
+  'thepremium · OMR 전체 PDF 판독 후 엑셀 검수',
+  '수정 시트: 판독검수 (이 시트만 수정)',
+  '1. 원본 PDF와 각 행의 PDF쪽·교과·판독답안을 대조하십시오.',
+  '2. 확정학생명에는 원본의 이름을 정확히 입력하고, 전화번호·수험번호는 가능한 경우 입력하십시오.',
+  '3. 11월확정선택과목은 OMR 마킹으로 인식한 과목을 확인하십시오. 이전 선택과목은 적용하지 않습니다.',
+  '4. 1번~45번의 답안을 확인/수정하십시오. 객관식은 1~5, 수학 단답형은 0~999, 미표기는 빈칸입니다.',
+  '5. OMR 과목 판독이 잘못됐다면 11월확정선택과목을 정정하고 마지막 열 「선택과목정정사유」를 입력하십시오.',
+  '6. 검수가 완료된 행의 검수확인(Y) 칸에 Y를 입력하십시오. 이 표시가 없는 행은 최종 반영할 수 없습니다.',
+  '6. 처리(Y/제외)를 제외로 입력한 행은 저장하지 않습니다. 판독에 실패한 행은 제외 후 재스캔하십시오.',
+  '7. 11월 정답·배점이 검증 확정된 과목만 점수를 산출합니다. 미표기는 오답 0점입니다.',
+  '8. 같은 학생·영역이 중복된 PDF쪽 또는 엑셀 행에 있으면 자동 확정하지 않습니다.',
+  '9. 업로드 후 검증 결과를 확인하고 최종 확정합니다. 실제 운영 중에는 전체 JSON 백업을 권장합니다.',
+  '10. 학생정보가 포함되므로 이 엑셀은 공개 GitHub에 올리지 마십시오.'
+ ]:guide.append([line])
+ guide.column_dimensions['A'].width=120;guide['A1'].font=Font(name='맑은 고딕',size=15,bold=True,color='17324D')
+ out=io.BytesIO();wb.save(out);return out.getvalue()
+
+def verify_batch_review(db,content,rows,source_name):
+ wb=load_workbook(io.BytesIO(content),read_only=True,data_only=True)
+ if '판독검수' not in wb.sheetnames:raise ValueError('「판독검수」 시트가 없습니다.')
+ ws=wb['판독검수']; data=list(ws.iter_rows(values_only=True))
+ if not data or [str(v or '').strip() for v in data[0][:len(REVIEW_FIELDS)]]!=REVIEW_FIELDS:
+  raise ValueError('검수 엑셀의 열 제목/순서가 변경되었습니다.')
+ expected={(r['page'],r['subject']) for r in rows}
+ changes=[];errors=[];seen=set();processed=set()
+ for idx,record in enumerate(data[1:],2):
+  if not any(v is not None for v in record):continue
+  try:
+   page=int(record[1]);sub=str(record[2] or '').strip();token=(page,sub)
+   if token not in expected:raise ValueError('현재 PDF에서 판독한 페이지·영역이 아닙니다')
+   if token in processed:raise ValueError('페이지·영역 중복 행')
+   processed.add(token)
+   original=next(r for r in rows if (r['page'],r['subject'])==token)
+   if str(record[11] or '').strip().lower() in ('제외','skip','n','no'):continue
+   if original.get('error'):raise ValueError('판독 실패. 재스캔 또는 이 행을 제외하십시오')
+   if str(record[0] or '').strip().upper()!='Y':raise ValueError('원본 대조 후 검수확인(Y)을 입력해야 합니다')
+   name=str(record[4] or '').strip();phone=str(record[5] or '').strip();exam=text_id(record[6])
+   stu=_find_student(db,'',name,phone,exam)
+   choice=norm(record[8])
+   if sub in ('영어','한국사'):choice=sub
+   elif choice not in OPTIONS['탐구' if sub.startswith('탐구') else sub]:raise ValueError('11월 선택과목 미확정/잘못된 과목')
+   # PDF 원본에서 인식된 선택과목이 명확하다면 임의로 다른 과목으로 바꾸는 것을 막음
+   recognized=norm(original.get('explore_name') if sub.startswith('탐구') else original.get('selection_choice'))
+   confident=original.get('explore_code_confident') if sub.startswith('탐구') else original.get('selection_confident')
+   if confident and recognized and choice!=recognized and not str((record[57] if len(record)>57 else '') or '').strip():raise ValueError(f'OMR 판독 과목({recognized})과 엑셀({choice}) 불일치: 마지막 열에 선택과목정정사유를 입력하십시오')
+   n=N[which(sub)];answers=[]
+   for q in range(1,n+1):
+    raw=record[11+q] if 11+q<len(record) else None
+    val=text_id(raw)
+    if sub=='수학' and (16<=q<=22 or q in (29,30)):
+     if val and (not val.isdigit() or len(val)>3):raise ValueError(f'{q}번: 수학 단답은 0~999 정수')
+    elif val and val not in ('1','2','3','4','5'):raise ValueError(f'{q}번: 객관식은 1~5 또는 공란')
+    answers.append(val)
+   key=(stu['id'],sub)
+   if key in seen:raise ValueError('동일 학생·영역 중복 반영')
+   seen.add(key)
+   changes.append({'학생':stu['name'],'학교':stu.get('school',''),'영역':sub,'11월선택':choice,'PDF쪽':page,
+     '미표기':sum(not x for x in answers),'uid':stu['id'],
+     'record':{'answers':answers,'choice':choice,'review':'확정','source':source_name,'page':page}})
+  except Exception as ex:errors.append(f'{idx}행: {ex}')
+ if len(processed)!=len(expected):errors.append('PDF 판독 결과 일부 페이지/영역이 검수 엑셀에서 누락되었습니다')
+ return changes,errors
+
 # 기존 3~10월 성적 엑셀 재등록 — 공개 GitHub 저장소에는 학생 자료를 넣지 않습니다.
 def import_history_excel(content):
  from openpyxl import load_workbook
@@ -783,6 +908,23 @@ if page=='학생 명부':
  st.info('수정 엑셀의 학생번호·이름·학교를 대조해 이력을 연결합니다. 서로 다른 이름이 동일 학생번호를 쓴 경우 별도 인원으로 구분합니다.')
 
 elif page=='11월 정답·배점':
+ st.subheader('11월 정답 통합 엑셀 불러오기 · 정산 기준 등록')
+ st.caption('국어·수학은 공통+OMR 선택과목 결합, 영어·한국사·탐구는 해당 원본 과목 정답을 읽습니다. 정답 자료를 등록해도 학생은 선택과목을 직접 고르지 않습니다.')
+ key_upload=st.file_uploader('검증한 11월 정답·배점 엑셀 업로드 (.xlsx)',type=['xlsx'],key='key_xlsx_import')
+ if KEY_FILE.exists():st.download_button('thepremium-answers-11.xlsx 받기',data=KEY_FILE.read_bytes(),file_name='thepremium-answers-11.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+ key_bytes=key_upload.getvalue() if key_upload else (KEY_FILE.read_bytes() if KEY_FILE.exists() else None)
+ if key_bytes:
+  try:
+   verified_keys=parse_november_keys(key_bytes)
+   st.success(f'정답표 구조 검사 통과 · {len(verified_keys)}개 과목/선택과목 구성')
+   st.dataframe([{'과목':k,'문항':len(v),'배점':sum(t['points'] for t in v)} for k,v in verified_keys.items()],hide_index=True,use_container_width=True)
+   correct_key=st.checkbox('원본 정답·배점을 직접 대조했고 이 정답 엑셀을 채점 기준으로 확정합니다.',key='key_xlsx_confirm')
+   if st.button('11월 정답 엑셀 검증 후 등록',disabled=not correct_key,type='primary'):
+    db.setdefault('keys',{}).update(verified_keys)
+    db.setdefault('key_verified',{}).update({k:True for k in verified_keys})
+    save(db);st.success('정답·배점 등록 완료 — 이제 검수 엑셀 업로드로 점수/잠정등급이 자동 정산됩니다.')
+  except Exception as ex:st.error('정답 엑셀 오류: '+str(ex))
+ st.divider()
  st.subheader('① 11월 정답 원본 확인')
  st.info('앞서 제공받은 11월 정답 이미지 16장을 원본 대조용으로 포함했습니다. 이미지를 보고 정답·배점을 검수한 뒤 아래 표를 확정해야 채점됩니다. 원본 이미지에서 정답이 자동 추출·검증된 상태는 아닙니다.')
  source=st.file_uploader('추가 정답 원본 ZIP 또는 PDF·이미지 올리기',type=['zip','pdf','png','jpg','jpeg'],key='key_reference_upload')
@@ -930,6 +1072,29 @@ elif page=='OMR 판독·검수':
                     '확인 필요':len(r['answers'])-ok,
                     '상태':'실패' if r['error'] else ('재판독/확인 필요' if r.get('suspect') else ('검수완료' if r['reviewed'] else '검수대기'))})
    st.dataframe(summary,use_container_width=True,hide_index=True)
+   st.divider()
+   st.subheader('③ 전체 OMR 판독 결과 엑셀 검수 → 업로드 → 정산')
+   st.info('OMR 페이지별 수동 입력 대신 「판독검수」 엑셀에서 모든 학생·과목·답안을 검수하십시오. 인쇄용 성적표는 기존 양식을 유지합니다.')
+   st.download_button('thepremium-omr-review.xlsx 다운로드',data=batch_review_excel(rows,uploaded.name),file_name='thepremium-omr-review.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',type='primary',key='omr_batch_review_export')
+   reviewed_file=st.file_uploader('검수가 끝난 엑셀 업로드 · 판독검수 시트',type=['xlsx'],key=f'omr_excel_review_{fingerprint[:12]}_{mode}')
+   if reviewed_file is not None:
+    try:
+     changes,errors=verify_batch_review(db,reviewed_file.getvalue(),rows,uploaded.name)
+     if errors:
+      st.error(f'검수 오류 {len(errors)}건 — 저장하지 않았습니다.')
+      for err in errors[:40]:st.write(err)
+     else:
+      st.success(f'검수 확인 완료: 반영 대상 {len(changes)}건 / 미반영 {len(rows)-len(changes)}건')
+      if changes:st.dataframe([{k:v for k,v in c.items() if k not in ('uid','record')} for c in changes],hide_index=True,use_container_width=True)
+      checked=st.checkbox('원본 OMR과 엑셀을 대조했습니다. 기존 11월 해당 학생·교과 답안이 교체될 수 있음을 확인했습니다.',key=f'confirm_excel_review_{fingerprint[:12]}')
+      if st.button('검수 엑셀 확정 업로드 · 11월 자동 정산',disabled=not changes or not checked,type='primary',key=f'commit_excel_review_{fingerprint[:12]}'):
+       updated=copy.deepcopy(db['results'])
+       for c in changes:updated.setdefault(c['uid'],{})[c['영역']]=c['record']
+       db['results']=updated;save(db)
+       st.success(f'{len(changes)}건 최종 저장 완료. 확정된 정답·배점이 있는 과목은 자동 정산됩니다. 「학생 성적표」에서 바로 PDF를 출력할 수 있습니다.')
+       if test_mode:st.info('테스트 모드 — 실제 성적에는 반영되지 않습니다.')
+    except Exception as exc:st.error('엑셀 검수 실패: '+str(exc))
+   st.stop()
    st.subheader('③ PDF 페이지별 학생 연결 · 답안 검수')
    roster=db['roster']
    labels=['학생 선택 필요']+[f"{a['student_number']} | {a['name']} | {a.get('school','')}" for a in roster]
