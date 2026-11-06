@@ -566,14 +566,14 @@ elif page=='OMR 판독·검수':
        answers,diagnostics,preview,meta=read_omr(img,sub)
        results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':answers,
                        'stats':diagnostics,'rotation':meta.get('rotation',0),
-                       'error':'','reviewed':False,'student_id':''})
+                       'error':'','reviewed':False,'student_id':'','suspect':meta.get('suspect',False),'detected':meta.get('detected',0)})
       except Exception as exc:
        results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':['']*N[which(sub)],
-                       'stats':[],'rotation':None,'error':str(exc),'reviewed':False,'student_id':''})
+                       'stats':[],'rotation':None,'error':str(exc),'reviewed':False,'student_id':'','suspect':True,'detected':0})
     except Exception as exc:
      for sub in subkeys:
       results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':['']*N[which(sub)],
-                      'stats':[],'rotation':None,'error':'PDF 변환 실패: '+str(exc),'reviewed':False,'student_id':''})
+                      'stats':[],'rotation':None,'error':'PDF 변환 실패: '+str(exc),'reviewed':False,'student_id':'','suspect':True,'detected':0})
     bar.progress((pi+1)/pages,text=f'{pi+1}/{pages}페이지 처리 완료')
    st.session_state.omr_batch={'fingerprint':fingerprint,'mode':mode,'rows':results,
                                'subject_group':subject_group,'file':uploaded.name}
@@ -590,7 +590,7 @@ elif page=='OMR 판독·검수':
     summary.append({'번호':i+1,'PDF 페이지':r['page'],'교과':LABEL.get(r['subject'],r['subject']),
                     '자동 판독':f'{ok}/{len(r["answers"])}',
                     '확인 필요':len(r['answers'])-ok,
-                    '상태':'실패' if r['error'] else ('검수완료' if r['reviewed'] else '검수대기')})
+                    '상태':'실패' if r['error'] else ('재판독/확인 필요' if r.get('suspect') else ('검수완료' if r['reviewed'] else '검수대기'))})
    st.dataframe(summary,use_container_width=True,hide_index=True)
    st.subheader('③ PDF 페이지별 학생 연결 · 답안 검수')
    roster=db['roster']
@@ -616,11 +616,21 @@ elif page=='OMR 판독·검수':
     r=rows[i]
     st.markdown(f'**{chosen_page}페이지 · {LABEL.get(r["subject"],r["subject"])}**')
     if r['error']:st.error('자동판독 실패: '+r['error'])
+    if r.get('suspect') and not r['error']:
+     st.error('자동 판독한 답안 수가 지나치게 적습니다. OMR 정렬 또는 채점 원 위치가 틀릴 가능성이 있으므로 이 결과를 그대로 확정할 수 없습니다. 아래 정렬 미리보기를 확인해 주십시오.')
+    if not r['error']:
+     if st.checkbox('자동 정방향·판독 원 위치 미리보기',value=bool(r.get('suspect')),key=f'aligned_preview_{i}_{fingerprint[:8]}'):
+      try:
+       im=encode_page(content,kind,r['page']-1,dpi=160)
+       _,_,overlay,info=read_omr(im,r['subject'])
+       st.caption(f'자동회전 {info["rotation"]}° / 정렬 대응점 {info["inliers"]}개 · 초록 원=자동판독, 주황/파랑 원=검수 필요')
+       st.image(overlay,use_container_width=True)
+      except Exception as exc:st.error('정렬 미리보기 생성 실패: '+str(exc))
     if st.button('이 답안 영역 다시 판독',key=f'subject_retry_{i}_{fingerprint[:8]}_{subject_group}'):
      try:
       im=encode_page(content,kind,r['page']-1)
       ans,stats,_,meta=read_omr(im,r['subject'])
-      r.update(answers=ans,stats=stats,rotation=meta.get('rotation'),error='',reviewed=False)
+      r.update(answers=ans,stats=stats,rotation=meta.get('rotation'),error='',reviewed=False,suspect=meta.get('suspect',False),detected=meta.get('detected',0))
       st.rerun()
      except Exception as e:st.error(str(e))
     if r['stats']:
@@ -639,9 +649,13 @@ elif page=='OMR 판독·검수':
     else:
      if parsed!=r['answers']:r['reviewed']=False
      r['answers']=parsed
+     if r.get('suspect'):
+      st.checkbox('원본과 1번부터 마지막 문항까지 직접 대조했고 필요한 답안을 수정했습니다.',key=f'manual_verified_{i}_{fingerprint[:8]}')
      if st.button('이 교과 검수 완료',key=f'subject_review_{i}_{fingerprint[:8]}'):
       if not selected_uid:st.error('학생을 먼저 선택하십시오.')
       elif r['error']:st.error('자동판독 오류를 해결하거나 재판독하십시오.')
+      elif r.get('suspect') and not st.session_state.get(f'manual_verified_{i}_{fingerprint[:8]}',False):
+       st.error('오검출 가능성이 커서 원본 마킹을 직접 대조했다는 확인이 필요합니다. 아래 체크박스를 먼저 선택하십시오.')
       else:r['reviewed']=True;st.success('검수 완료 — 아직 저장되지 않았습니다.')
    st.divider()
    st.subheader('④ 검수 완료 답안 일괄 확정')
