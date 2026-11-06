@@ -577,6 +577,87 @@ def parse_november_roster(db,content):
   except Exception as e:errors.append(f'{lineno}행: {e}')
  return roster,changed,errors
 
+# 모든 응시자(기존 + 11월 신규)를 하나의 편집 가능한 파일로 관리합니다.
+MASTER_COLUMNS=['학생ID(기존유지)','학생명','학교','학년','수험번호','전화번호','국어 선택','수학 선택','탐구Ⅰ 선택','탐구Ⅱ 선택']
+def complete_roster_workbook(db):
+ wb=Workbook();ws=wb.active;ws.title='전체응시자명부';ws.append(MASTER_COLUMNS)
+ for stu in db['roster']:
+  ws.append([stu['id'],stu['name'],stu.get('school',''),stu.get('grade','고3'),
+             text_id(stu.get('exam_number') or stu.get('student_number')),phone_digits(stu.get('phone')),
+             norm(stu.get('korean')),norm(stu.get('math')),norm(stu.get('explore1')),norm(stu.get('explore2'))])
+ for row in ws.iter_rows(min_row=2):
+  row[4].number_format='@';row[5].number_format='@'
+ for c in ws[1]:
+  c.fill=PatternFill('solid',fgColor='123A56');c.font=Font(name='맑은 고딕',bold=True,color='FFFFFF')
+ for col in 'ABCDEFGHIJ':ws.column_dimensions[col].width=21
+ ws.column_dimensions['A'].width=29
+ ws.freeze_panes='B2';ws.auto_filter.ref=f'A1:J{max(2,ws.max_row)}'
+ info=wb.create_sheet('사용안내')
+ for message in ['수정은 오직 「전체응시자명부」 시트에서 합니다.',
+ '기존 학생의 학생ID(기존유지)는 수정하지 마십시오. 3~10월 누적 성적과 연결되는 고유키입니다.',
+ '11월 신규 응시자는 맨 아래 빈 행에 추가하고 학생ID 칸을 비워두십시오.',
+ '기존 학생의 이름을 변경하더라도 학생ID가 같으면 3~10월 성적이 유지됩니다.',
+ '전화번호·수험번호는 앞의 0이 보존되도록 텍스트로 입력하십시오.',
+ '기존 학생의 국어·수학·탐구 선택과목과 11월 OMR에서 읽은 실제 선택과목이 달라도 정산됩니다.',
+ '이 파일은 민감한 학생정보가 있으므로 공개 GitHub에 올리지 마십시오.',
+ '기존 학생을 시트에서 삭제해도 프로그램에서는 삭제되지 않습니다.']:info.append([message])
+ info.column_dimensions['A'].width=118
+ out=io.BytesIO();wb.save(out);return out.getvalue()
+
+def preview_complete_roster(db, content):
+ wb=load_workbook(io.BytesIO(content),read_only=True,data_only=True)
+ if '전체응시자명부' not in wb.sheetnames:raise ValueError('「전체응시자명부」 시트를 찾을 수 없습니다.')
+ ws=wb['전체응시자명부'];headers=[str(c.value or '').strip() for c in next(ws.iter_rows(max_row=1))]
+ if headers[:len(MASTER_COLUMNS)]!=MASTER_COLUMNS:raise ValueError('전체응시자명부 열 이름·순서를 변경하지 마십시오.')
+ original={str(item['id']):item for item in db['roster']}
+ roster=copy.deepcopy(db['roster']); byid={str(v['id']):v for v in roster}
+ errors=[];summary=[];seen=set()
+ for line,row in enumerate(ws.iter_rows(min_row=2,values_only=True),2):
+  values=(list(row[:10])+[None]*10)[:10]
+  if not any(v is not None and str(v).strip() for v in values):continue
+  try:
+   uid,name,school,grade,exam,phone,korean,math,ex1,ex2=values
+   uid=str(uid or '').strip();name=str(name or '').strip();school=str(school or '').strip()
+   grade=str(grade or '고3').strip();exam=text_id(exam);phone=phone_digits(phone)
+   if not name:raise ValueError('학생명 필수')
+   if not exam and not phone:raise ValueError('전화번호 또는 수험번호 입력 필요')
+   if uid and uid not in original:raise ValueError('등록되지 않은 학생ID. 신규 학생은 학생ID 칸을 비워두십시오')
+   if uid and uid in seen:raise ValueError('같은 학생ID가 파일에 중복되어 있습니다')
+   incoming={'korean':norm(korean),'math':norm(math),'explore1':norm(ex1),'explore2':norm(ex2)}
+   for field,domain in [('korean','국어'),('math','수학'),('explore1','탐구'),('explore2','탐구')]:
+    if incoming[field] and incoming[field] not in OPTIONS[domain]:raise ValueError(f'선택과목 오류: {incoming[field]}')
+   if not uid:
+    samephone=[p for p in roster if phone and phone==phone_digits(p.get('phone'))]
+    samename=[p for p in roster if p['name']==name]
+    if samephone:
+     if len(samephone)!=1 or samephone[0]['name']!=name:raise ValueError('전화번호가 다른 학생명과 중복됩니다')
+     uid=str(samephone[0]['id'])
+    elif samename:
+     if len(samename)!=1:raise ValueError('동명이인입니다. 기존 학생ID를 확인하십시오')
+     candidate=samename[0]
+     existing_phone=phone_digits(candidate.get('phone'))
+     if existing_phone and phone and existing_phone!=phone:raise ValueError('학생명 동일·전화번호 불일치: 수동 확인 필요')
+     uid=str(candidate['id'])
+    else:
+     import hashlib
+     uid='november|'+hashlib.sha256(f'{name}|{phone}|{exam}|{school}'.encode()).hexdigest()[:18]
+     if uid in byid:raise ValueError('학생ID 중복')
+     new={'id':uid,'student_number':exam or uid,'name':name,'november_new':True}
+     roster.append(new);byid[uid]=new
+   if uid in seen:raise ValueError('동일 학생에 대해 두 행 이상 작성되었습니다')
+   for other in roster:
+    if str(other['id'])==uid:continue
+    if phone and phone==phone_digits(other.get('phone')):raise ValueError(f'전화번호 중복: {other["name"]}')
+    other_exam=text_id(other.get('exam_number'))
+    if exam and other_exam and exam==other_exam:raise ValueError(f'수험번호 중복: {other["name"]}')
+   item=byid[uid]
+   before=(item.get('name'),item.get('phone'),item.get('exam_number'))
+   item.update(name=name,school=school,grade=grade,phone=phone,exam_number=exam,**incoming)
+   seen.add(uid)
+   summary.append({'엑셀행':line,'학생명':name,'처리':'신규 학생' if uid not in original else ('기존 학생 정보수정' if before!=(name,phone,exam) else '기존 학생 연결')})
+  except Exception as exc:errors.append(f'{line}행: {exc}')
+ return roster,summary,errors
+
 st.set_page_config(page_title='11월 더프 | 성적처리 NAVI',page_icon='📊',layout='wide')
 # 배포된 앱은 비밀번호가 없으면 학생 개인정보 접근을 차단합니다.
 try:
@@ -646,6 +727,24 @@ if page=='학생 명부':
    st.rerun()
   except Exception as e:st.error(f'엑셀 불러오기 실패: {e}')
 
+ st.divider()
+ st.subheader('전체 응시자 명부 · 엑셀 내려받기/수정/재업로드')
+ st.info('기존 학생과 11월 신규 응시자를 한 시트에서 관리합니다. 기존 학생ID는 그대로 두고 신규 학생은 ID를 비워 작성하십시오. 이름을 수정해도 ID를 유지하면 과거 성적이 보존됩니다.')
+ st.download_button('thepremium-roster-all.xlsx 다운로드',complete_roster_workbook(db),file_name='thepremium-roster-all.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key='master_roster_download')
+ master_file=st.file_uploader('수정할 시트: 전체응시자명부 · 수정 엑셀 업로드',type=['xlsx'],key='master_roster_upload')
+ if master_file:
+  try:
+   suggested,log,problems=preview_complete_roster(db,master_file.getvalue())
+   if problems:
+    st.error(f'명부 검사 오류 {len(problems)}건. 데이터는 변경하지 않았습니다.')
+    for reason in problems:st.write(reason)
+   else:
+    st.success(f'검증 성공: {len(log)}행 / 새 명부 {len(suggested)}명')
+    st.dataframe(log,hide_index=True,use_container_width=True)
+    if st.checkbox('학생ID, 이름, 전화번호와 신규 학생을 확인했습니다.',key='master_roster_confirm'):
+     if st.button('검증된 전체 명부 적용',type='primary',key='master_roster_apply'):
+      db['roster']=suggested;save(db);st.success('명부 갱신 완료. 기존 누적 성적·OMR 결과는 보존되었습니다.');st.rerun()
+  except Exception as exc:st.error('전체 명부 업로드 오류: '+str(exc))
  st.divider()
  st.subheader('11월 신규 응시자 · 엑셀 명부 일괄 등록')
  st.caption('기존 학생명과 대조하여 연결하고, 신규 학생만 추가합니다. 과거 성적 기록은 변경하지 않습니다.')
@@ -770,7 +869,7 @@ elif page=='OMR 판독·검수':
  st.subheader('① 교과별 OMR PDF 일괄 업로드')
  st.info('교과별 PDF 전체 자동판독 후 학생명·수험번호·전화번호로 매칭합니다. OMR 필기값을 신뢰할 수 없으면 화면에서 확인한 정보를 입력해 연결합니다.')
  subject_group=st.selectbox('업로드할 교과 영역',['국어','수학','영어','한국사','탐구'],key='subject_batch_group')
- st.caption('탐구는 한 페이지의 탐구Ⅰ·탐구Ⅱ를 별도 판독합니다. 수학 단답형은 세 자리 숫자 마킹을 자동 판독하여 후보를 제시하고, 원본 검수 후 확정합니다. 모든 교과의 미표기는 0점입니다.')
+ st.caption('선택과목은 OMR 마킹을 우선 판독하며, 과거 선택과목이 바뀌어도 11월 현재 응시과목의 정답을 사용합니다. 탐구는 한 페이지의 탐구Ⅰ·탐구Ⅱ를 별도 판독합니다. 수학 단답형은 세 자리 숫자 마킹을 자동 판독하여 후보를 제시하고, 원본 검수 후 확정합니다. 모든 교과의 미표기는 0점입니다.')
  uploaded=st.file_uploader(f'{subject_group} OMR 묶음 PDF (여러 학생의 답안지가 들어 있는 파일)',type=['pdf','png','jpg','jpeg'],key='all_student_omr')
  if uploaded is not None:
   content=uploaded.getvalue()
@@ -797,7 +896,15 @@ elif page=='OMR 판독·검수':
        answers,diagnostics,preview,meta=read_omr(img,sub)
        results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':answers,
                        'stats':diagnostics,'rotation':meta.get('rotation',0),
-                       'error':'','reviewed':False,'student_id':'','suspect':meta.get('suspect',False),'detected':meta.get('detected',0),'explore_code':meta.get('explore_code'),'explore_name':meta.get('explore_name',''),'explore_code_confident':meta.get('explore_code_confident',False)})
+                       'error':'','reviewed':False,'student_id':'','suspect':meta.get('suspect',False),'detected':meta.get('detected',0),'explore_code':meta.get('explore_code'),'explore_name':meta.get('explore_name',''),'explore_code_confident':meta.get('explore_code_confident',False),
+                       'selection_choice':meta.get('selection_choice',''),
+                       'selection_confident':meta.get('selection_confident',False),
+                       'selection_diagnostics':meta.get('selection_diagnostics',{}),
+                       'math_track':meta.get('math_track',''),
+                       'math_track_confident':meta.get('math_track_confident',False),
+                       'name_candidate':meta.get('name_candidate',''),
+                       'name_confident':meta.get('name_confident',False),
+                       'name_components':meta.get('name_components',[])})
       except Exception as exc:
        results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':['']*N[which(sub)],
                        'stats':[],'rotation':None,'error':str(exc),'reviewed':False,'student_id':'','suspect':True,'detected':0})
@@ -832,7 +939,20 @@ elif page=='OMR 판독·검수':
    selected_index=next((j+1 for j,v in enumerate(roster) if v['id']==existing),0)
    st.caption('학생명은 우선 확인하며, 동명이인은 전화번호 또는 수험번호로 구별합니다. 필기된 연락처를 자동으로 읽었다고 가정하지 않습니다.')
    match_a,match_b,match_c=st.columns(3)
-   entered_name=match_a.text_input('OMR 학생명',key=f'match_name_{chosen_page}_{fingerprint[:8]}')
+   first_candidate=next((rows[i].get('name_candidate','') for i in indices if rows[i].get('name_confident') and rows[i].get('name_candidate')), '')
+   if first_candidate:
+    st.info(f'한글 초성·중성·종성 자동 조합 후보: **{first_candidate}** — 반드시 원본과 대조하여 확인하십시오.')
+   else:
+    st.warning('OMR 한글 이름의 마킹이 불명확하거나 일부 자모를 판독하지 못했습니다. 학생 이름을 직접 확인하십시오.')
+   if st.checkbox('학생 이름 마킹 조합 과정 보기',key=f'name_parts_{chosen_page}_{fingerprint[:8]}'):
+    for row_i in indices:
+     if rows[row_i].get('name_components'):
+      st.dataframe(rows[row_i]['name_components'],hide_index=True,use_container_width=True)
+   entered_name=match_a.text_input('OMR 학생명 (후보 수정 가능)',value=first_candidate,key=f'match_name_{chosen_page}_{fingerprint[:8]}')
+   if first_candidate:
+    suggested_names=[v for v in roster if v.get('name')==first_candidate]
+    if len(suggested_names)==1:st.caption('명부 일치 후보: '+first_candidate+' · 해당 학생을 확인 후 연결하십시오.')
+    elif len(suggested_names)>1:st.warning('동명이인 후보입니다. 전화번호 또는 수험번호 확인이 필요합니다.')
    entered_phone=match_b.text_input('전화번호(선택)',key=f'match_phone_{chosen_page}_{fingerprint[:8]}')
    entered_exam=match_c.text_input('수험번호(선택)',key=f'match_exam_{chosen_page}_{fingerprint[:8]}')
    widget_key=f'subject_student_{chosen_page}_{fingerprint[:8]}_{subject_group}'
@@ -873,7 +993,13 @@ elif page=='OMR 판독·검수':
     old_student=next((a for a in roster if a['id']==selected_uid),None)
     pickfield={'국어':'korean','수학':'math','탐구1':'explore1','탐구2':'explore2'}.get(r['subject'])
     oldchoice=norm(old_student.get(pickfield,'')) if old_student and pickfield else r['subject']
-    detected_choice=norm(r.get('explore_name','')) if r['subject'].startswith('탐구') and r.get('explore_code_confident') else ''
+    detected_choice=(norm(r.get('explore_name','')) if r['subject'].startswith('탐구') and r.get('explore_code_confident')
+                     else norm(r.get('selection_choice','')) if r.get('selection_confident') else '')
+    if r['subject'] in ('국어','수학'):
+     if r.get('selection_confident'):
+      st.success(f'OMR 선택과목 자동판독: {detected_choice}'+(f' / 계열: {r.get("math_track")}' if r.get('math_track_confident') else ''))
+     else:
+      st.warning('OMR 선택과목 마킹이 없거나 판독이 불확실합니다. 아래에서 11월 실제 선택과목을 확인하십시오.')
     default_choice=norm(r.get('choice') or detected_choice or oldchoice)
     choices=OPTIONS['탐구' if r['subject'].startswith('탐구') else r['subject']]
     if r['subject'] in ('영어','한국사'):r['choice']=r['subject']
@@ -898,7 +1024,13 @@ elif page=='OMR 판독·검수':
      try:
       im=encode_page(content,kind,r['page']-1)
       ans,stats,_,meta=read_omr(im,r['subject'])
-      r.update(answers=ans,stats=stats,rotation=meta.get('rotation'),error='',reviewed=False,suspect=meta.get('suspect',False),detected=meta.get('detected',0),explore_code=meta.get('explore_code'),explore_name=meta.get('explore_name',''),explore_code_confident=meta.get('explore_code_confident',False))
+      r.update(answers=ans,stats=stats,rotation=meta.get('rotation'),error='',reviewed=False,suspect=meta.get('suspect',False),detected=meta.get('detected',0),explore_code=meta.get('explore_code'),explore_name=meta.get('explore_name',''),explore_code_confident=meta.get('explore_code_confident',False),
+               selection_choice=meta.get('selection_choice',''),selection_confident=meta.get('selection_confident',False),
+               selection_diagnostics=meta.get('selection_diagnostics',{}),
+               math_track=meta.get('math_track',''),math_track_confident=meta.get('math_track_confident',False),
+               name_candidate=meta.get('name_candidate',''),
+               name_confident=meta.get('name_confident',False),
+               name_components=meta.get('name_components',[]))
       st.rerun()
      except Exception as e:st.error(str(e))
     if r['stats']:

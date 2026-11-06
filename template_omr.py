@@ -166,7 +166,7 @@ def _digit_candidate(rgb, gray, ref_gray, question):
 
 # THE PREMIUM 탐구 과목코드: 20 물리Ⅰ, 21 화학Ⅰ, 22 생명과학Ⅰ,
 # 23 지구과학Ⅰ. Do not label a candidate as verified without clear marks.
-SCIENCE_CODE={20:'물리학Ⅰ',21:'화학Ⅰ',22:'생명과학Ⅰ',23:'지구과학Ⅰ',
+SCIENCE_CODE={11:'생활과 윤리',12:'윤리와 사상',13:'한국지리',14:'세계지리',15:'동아시아사',16:'세계사',17:'경제',18:'정치와 법',19:'사회·문화',20:'물리학Ⅰ',21:'화학Ⅰ',22:'생명과학Ⅰ',23:'지구과학Ⅰ',
               24:'물리학Ⅱ',25:'화학Ⅱ',26:'생명과학Ⅱ',27:'지구과학Ⅱ'}
 
 def exploration_subject_candidate(aligned, subject):
@@ -179,7 +179,7 @@ def exploration_subject_candidate(aligned, subject):
     gray=cv2.cvtColor(aligned,cv2.COLOR_RGB2GRAY)
     refgray=cv2.cvtColor(_ref(subject),cv2.COLOR_RGB2GRAY)
     # selector's two-digit lanes left of each answer block, 0...9 vertically
-    xs=(550,566) if subject=='탐구1' else (852,868)
+    xs=(568,584) if subject=='탐구1' else (846,862)
     out=[]
     for x in xs:
         values=[_digit_ink(aligned,gray,refgray,x,266+31.2*k) for k in range(10)]
@@ -188,6 +188,93 @@ def exploration_subject_candidate(aligned, subject):
         out.append(str(a))
     code=int(''.join(out))
     return code,SCIENCE_CODE.get(code,''),bool(code in SCIENCE_CODE)
+
+# 선택과목 OMR 전용 영역. 공통문항 답란과 별개이며, 이전 월 선택과목으로 대체하지 않습니다.
+SUBJECT_BUBBLES = {
+    '국어': [('화법과 작문',(363,329)), ('언어와 매체',(363,361))],
+    '수학': [('확률과 통계',(362,391)), ('미적분',(362,423)), ('기하',(362,454))],
+}
+TRACK_BUBBLES = [('인문계',(362,571)), ('자연계',(362,605))]
+
+def _choice_marks(rgb,subject,positions):
+    """Template-relative dark neutral marks; never force an ambiguous result."""
+    gray=cv2.cvtColor(rgb,cv2.COLOR_RGB2GRAY)
+    refgray=cv2.cvtColor(_ref(subject),cv2.COLOR_RGB2GRAY)
+    vals=[_score_at(rgb,gray,refgray,*pt) for _,pt in positions]
+    order=np.argsort(vals)[::-1]
+    first=int(order[0]); second=int(order[1])
+    high=float(vals[first]); gap=high-float(vals[second])
+    confident=high>=.29 and gap>=.13
+    return (positions[first][0] if confident else ''),confident,{
+        'strengths':{label:round(float(v),3) for (label,_),v in zip(positions,vals)},
+        'highest':round(high,3),'margin':round(gap,3)
+    }
+
+def selection_subject_candidate(aligned,subject):
+    if subject not in SUBJECT_BUBBLES:
+        return {'choice':'','confident':False,'diagnostics':{}}
+    choice,ok,stats=_choice_marks(aligned,subject,SUBJECT_BUBBLES[subject])
+    result={'choice':choice,'confident':ok,'diagnostics':stats}
+    if subject=='수학':
+        track,track_ok,track_stats=_choice_marks(aligned,subject,TRACK_BUBBLES)
+        result.update(track=track,track_confident=track_ok,track_diagnostics=track_stats)
+    return result
+
+# 학생명: 각 글자는 [초성, 중성, 종성] 3열, 최대 4글자.
+# 인쇄 순서는 현대 한글 자모의 표준 음절 조합 순서. 종성의 일부 복합자모는
+# 추가 칸 배열이 있으므로 미검증 후보를 자동 확정하지 않습니다.
+NAME_CHO=['ㄱ','ㄲ','ㄴ','ㄷ','ㄸ','ㄹ','ㅁ','ㅂ','ㅃ','ㅅ','ㅆ','ㅇ','ㅈ','ㅉ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ']
+NAME_JUNG=['ㅏ','ㅐ','ㅑ','ㅒ','ㅓ','ㅔ','ㅕ','ㅖ','ㅗ','ㅘ','ㅙ','ㅚ','ㅛ','ㅜ','ㅝ','ㅞ','ㅟ','ㅠ','ㅡ','ㅢ','ㅣ']
+# OMR 인쇄에서 첫 세 종성 칸은 ㄱ,ㄲ,ㄴ 순서 (ㄳ은 추가 칸).
+NAME_JONG=['ㄱ','ㄲ','ㄴ','ㄵ','ㄶ','ㄷ','ㄹ','ㄺ','ㄻ','ㄼ','ㄽ','ㄾ','ㄿ','ㅀ','ㅁ','ㅂ','ㅄ','ㅅ','ㅆ','ㅇ','ㅈ']
+HANGUL_JONG=['','ㄱ','ㄲ','ㄳ','ㄴ','ㄵ','ㄶ','ㄷ','ㄹ','ㄺ','ㄻ','ㄼ','ㄽ','ㄾ','ㄿ','ㅀ','ㅁ','ㅂ','ㅄ','ㅅ','ㅆ','ㅇ','ㅈ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ']
+
+def _name_component(rgb,gray,refgray,x,y,count):
+    vals=[_score_at(rgb,gray,refgray,x,y+15.5*j) for j in range(count)]
+    order=np.argsort(vals)[::-1]
+    high=float(vals[order[0]])
+    margin=high-float(vals[order[1]]) if len(vals)>1 else high
+    # Be deliberately conservative: the result is for human confirmation.
+    if high<.24:return None,'빈칸',round(high,2)
+    if high<.36 or margin<.13:return None,'불확실',round(high,2)
+    return int(order[0]),'판독후보',round(high,2)
+
+def decode_name_candidate(aligned,subject):
+    """Name candidate (not verified identity) from printed Hangul OMR.
+
+    Returns confidence false if a component is inconsistent/ambiguous.
+    This cannot replace confirmation against student roster and exam number.
+    """
+    gray=cv2.cvtColor(aligned,cv2.COLOR_RGB2GRAY)
+    refgray=cv2.cvtColor(_ref(subject),cv2.COLOR_RGB2GRAY)
+    parts=[];statuses=[];ambiguous=False
+    for syll in range(4):
+        x0=425.5+46.7*syll
+        rows=[]
+        for col,count in [(0,19),(1,21),(2,len(NAME_JONG))]:
+            rows.append(_name_component(aligned,gray,refgray,x0+15.55*col,433.5,count))
+        (ci,cs,_),(vi,vs,_),(fi,fs,_)=rows
+        if cs=='빈칸' and vs=='빈칸' and fs=='빈칸':
+            # A trailing unmarked syllable column is valid.
+            statuses.append({'글자':syll+1,'초성':'','중성':'','종성':'','상태':'미사용'})
+            continue
+        if ci is None or vi is None or fs=='불확실':
+            ambiguous=True
+            statuses.append({'글자':syll+1,'초성':NAME_CHO[ci] if ci is not None else '?',
+                             '중성':NAME_JUNG[vi] if vi is not None else '?',
+                             '종성':NAME_JONG[fi] if fi is not None else '', '상태':'확인필요'})
+            continue
+        jong=NAME_JONG[fi] if fi is not None else ''
+        cp=0xAC00+(ci*21+vi)*28+HANGUL_JONG.index(jong)
+        parts.append(chr(cp))
+        statuses.append({'글자':syll+1,'초성':NAME_CHO[ci],'중성':NAME_JUNG[vi],
+                         '종성':jong or '없음','상태':'판독후보'})
+    if not parts or ambiguous:return {'candidate':'','confident':False,'parts':statuses}
+    # Require continuous syllables rather than filled column after a gap.
+    used=[x['상태']!='미사용' for x in statuses]
+    contiguous=not any(used[j] and not used[j-1] for j in range(1,4))
+    return {'candidate':''.join(parts) if contiguous else '',
+            'confident':contiguous,'parts':statuses}
 
 def read_omr(image,subject):
     ref=_ref(subject)
@@ -231,6 +318,18 @@ def read_omr(image,subject):
             center=(round(x),round(y))
             color=(0,175,0) if status=='정상' and k==top else (235,75,25) if status!='정상' else (0,165,235)
             cv2.circle(preview,center,5,color,1,cv2.LINE_AA)
+    nm=decode_name_candidate(aligned,subject)
+    meta['name_candidate']=nm['candidate']
+    meta['name_confident']=nm['confident']
+    meta['name_components']=nm['parts']
+    if subject in ('국어','수학'):
+        sel=selection_subject_candidate(aligned,subject)
+        meta['selection_choice']=sel['choice']
+        meta['selection_confident']=sel['confident']
+        meta['selection_diagnostics']=sel['diagnostics']
+        if subject=='수학':
+            meta['math_track']=sel['track']
+            meta['math_track_confident']=sel['track_confident']
     if subject in ('탐구1','탐구2'):
         code,label,verified=exploration_subject_candidate(aligned,subject)
         meta['explore_code']=code
