@@ -783,6 +783,22 @@ def preview_complete_roster(db, content):
   except Exception as exc:errors.append(f'{line}행: {exc}')
  return roster,summary,errors
 
+def preview_roster_excel_auto(db, content):
+ """Accept both master edit and November roster Excel uploads without guessing sheet names.
+ Existing students are updated by stable ID, then by unambiguous name+identifiers.
+ Unlisted students and all 3~10월 / 11월 marks are preserved.
+ """
+ workbook=load_workbook(io.BytesIO(content),read_only=True,data_only=True)
+ sheets=set(workbook.sheetnames)
+ workbook.close()
+ if '전체응시자명부' in sheets:
+  roster,log,errors=preview_complete_roster(db,content)
+  return roster,log,errors,'전체응시자명부', '기존 학생 정보 덮어쓰기 및 신규 등록'
+ if '11월신규명부' in sheets:
+  roster,log,errors=parse_november_roster(db,content)
+  return roster,log,errors,'11월신규명부', '기존 학생 매칭·갱신 및 신규 응시자 추가'
+ raise ValueError('명부 시트를 찾지 못했습니다. 「전체응시자명부」 또는 「11월신규명부」 시트가 있는 파일을 업로드하십시오. 원본 3~10월 성적 엑셀은 위쪽 「성적 엑셀 검증 및 학생 이력 갱신」에서 등록하십시오.')
+
 st.set_page_config(page_title='11월 더프 | 성적처리 NAVI',page_icon='📊',layout='wide')
 # 배포된 앱은 비밀번호가 없으면 학생 개인정보 접근을 차단합니다.
 try:
@@ -853,22 +869,29 @@ if page=='학생 명부':
   except Exception as e:st.error(f'엑셀 불러오기 실패: {e}')
 
  st.divider()
- st.subheader('전체 응시자 명부 · 엑셀 내려받기/수정/재업로드')
- st.info('기존 학생과 11월 신규 응시자를 한 시트에서 관리합니다. 기존 학생ID는 그대로 두고 신규 학생은 ID를 비워 작성하십시오. 이름을 수정해도 ID를 유지하면 과거 성적이 보존됩니다.')
- st.download_button('thepremium-roster-all.xlsx 다운로드',complete_roster_workbook(db),file_name='thepremium-roster-all.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key='master_roster_download')
- master_file=st.file_uploader('수정할 시트: 전체응시자명부 · 수정 엑셀 업로드',type=['xlsx'],key='master_roster_upload')
+ st.subheader('전체 응시자 명부 · 엑셀 덮어쓰기/추가')
+ st.info('아래 한 곳에서 「전체응시자명부」와 「11월신규명부」 두 가지 엑셀 파일을 자동 구분합니다. 기존 학생은 이름·전화번호·수험번호 또는 고유 학생ID로 연결하고, 신규 학생은 추가합니다. 3~10월 성적과 11월 확정 답안은 삭제하지 않습니다.')
+ st.download_button('전체 응시자 명부 엑셀 다운로드 (수정용)',complete_roster_workbook(db),file_name='thepremium-roster-all.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key='master_roster_download')
+ master_file=st.file_uploader('전체 명부 덮어쓰기 또는 11월 응시자 명부 업로드 (.xlsx)',type=['xlsx'],key='master_roster_upload')
  if master_file:
   try:
-   suggested,log,problems=preview_complete_roster(db,master_file.getvalue())
+   suggested,log,problems,sheet_name,method=preview_roster_excel_auto(db,master_file.getvalue())
+   st.caption(f'인식된 시트: {sheet_name} · 처리 방식: {method}')
    if problems:
-    st.error(f'명부 검사 오류 {len(problems)}건. 데이터는 변경하지 않았습니다.')
+    st.error(f'명부 검사 오류 {len(problems)}건. 기존 명부와 성적은 전혀 변경하지 않았습니다.')
     for reason in problems:st.write(reason)
    else:
-    st.success(f'검증 성공: {len(log)}행 / 새 명부 {len(suggested)}명')
+    st.success(f'검증 완료: {len(log)}건 / 반영 후 총 {len(suggested)}명')
     st.dataframe(log,hide_index=True,use_container_width=True)
-    if st.checkbox('학생ID, 이름, 전화번호와 신규 학생을 확인했습니다.',key='master_roster_confirm'):
-     if st.button('검증된 전체 명부 적용',type='primary',key='master_roster_apply'):
-      db['roster']=suggested;save(db);st.success('명부 갱신 완료. 기존 누적 성적·OMR 결과는 보존되었습니다.');st.rerun()
+    st.warning('기존 학생 명부의 정보가 변경됩니다. 업로드 파일에 없는 학생은 삭제하지 않으며, 기존 3~10월·11월 성적은 그대로 유지됩니다.')
+    import hashlib
+    signature=hashlib.sha256(master_file.getvalue()).hexdigest()[:16]
+    if st.checkbox('명부 변경 내용과 기존 학생 매칭을 확인했습니다.',key='master_roster_confirm_'+signature):
+     if st.button('검증한 엑셀로 학생 명부 덮어쓰기·추가',type='primary',key='master_roster_apply_'+signature):
+      db['roster']=suggested
+      save(db)
+      st.success('학생 명부 갱신 완료. 누적 성적과 확정 OMR 결과는 보존했습니다.')
+      st.rerun()
   except Exception as exc:st.error('전체 명부 업로드 오류: '+str(exc))
  st.divider()
  st.subheader('11월 신규 응시자 · 엑셀 명부 일괄 등록')
