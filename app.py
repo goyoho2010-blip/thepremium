@@ -107,15 +107,38 @@ THREE_CUT_PATH=ROOT/'reference'/'three_year_cuts.json'
 def default_three_year_cuts():
  return json.loads(THREE_CUT_PATH.read_text(encoding='utf-8')) if THREE_CUT_PATH.exists() else {}
 
+def merge_three_year_cuts(previous, baseline=None):
+ """구버전 DB의 빈 등급컷은 새 참고자료로 보완하되, 관리자가 수정한 값은 보존."""
+ current=copy.deepcopy(previous or {})
+ base=baseline if baseline is not None else default_three_year_cuts()
+ for key, years in base.items():
+  target=current.setdefault(key,{})
+  for year, ref in years.items():
+   original=target.get(year) or {}
+   old=original.get('cuts') if isinstance(original,dict) else None
+   old=old if isinstance(old,list) and len(old)==8 else [None]*8
+   combined=[v if v is not None else ref['cuts'][i] for i,v in enumerate(old)]
+   if all(v is None for v in old) or not (original.get('source') or '').strip():
+    source=ref.get('source','')
+   else:
+    source=original.get('source','')
+   target[year]={'cuts':combined,'source':source}
+ return current
+
+def possible_grades_from_year_cut(score,cuts):
+ """미검증 컷이 있으면 가능한 1~9등급 집합을 반환. 공란을 임의의 컷으로 채우지 않음."""
+ if score is None or not isinstance(cuts,list) or len(cuts)!=8:return set(range(1,10))
+ possible=set()
+ for g in range(1,10):
+  # g등급: (g-1)등급 하한보다 낮고 g등급 하한 이상
+  higher_ok=(g==1 or cuts[g-2] is None or score<cuts[g-2])
+  lower_ok=(g==9 or cuts[g-1] is None or score>=cuts[g-1])
+  if higher_ok and lower_ok:possible.add(g)
+ return possible
+
 def grade_from_year_cut(score,cuts):
- """확인된 경계값만 사용. 미확인 구간을 임의로 9등급 처리하지 않음."""
- if score is None or not isinstance(cuts,list) or len(cuts)!=8:return None
- if cuts[0] is not None and score>=cuts[0]:return 1
- for i in range(1,8):
-  upper=cuts[i-1];lower=cuts[i]
-  if upper is not None and lower is not None and lower<=score<upper:return i+1
- if cuts[7] is not None and score<cuts[7]:return 9
- return None
+ possibilities=possible_grades_from_year_cut(score,cuts)
+ return next(iter(possibilities)) if len(possibilities)==1 else None
 
 def three_year_grade_details(subject,choice,score,db):
  if score is None:return {'grade':None,'annual':{},'reason':'원점수 미확정'}
@@ -127,13 +150,22 @@ def three_year_grade_details(subject,choice,score,db):
   g=grade_from_year_cut(score,[40,35,30,25,20,15,10,5])
   return {'grade':g,'annual':{str(y):g for y in (2024,2025,2026)},'reason':'절대평가 고정컷'}
  key=group+'|'+norm(choice)
- data=db.get('three_year_cuts') or default_three_year_cuts()
- yr_data=data.get(key,{})
- annual={str(y):grade_from_year_cut(score,(yr_data.get(str(y)) or {}).get('cuts')) for y in (2024,2025,2026)}
- grades=list(annual.values())
- if any(g is None for g in grades):
-  return {'grade':None,'annual':annual,'reason':'3개년 해당 원점수 구간의 등급컷 검증 미완료'}
- return {'grade':sorted(grades)[1],'annual':annual,'reason':'3개년 등급 중앙값(비공식 추정)'}
+ data=merge_three_year_cuts(db.get('three_year_cuts'))
+ years=data.get(key,{})
+ possibilities={}
+ annual={}
+ for y in (2024,2025,2026):
+  cuts=(years.get(str(y)) or {}).get('cuts')
+  options=possible_grades_from_year_cut(score,cuts)
+  possibilities[str(y)]=options
+  annual[str(y)]=next(iter(options)) if len(options)==1 else None
+ from itertools import product
+ possible_medians={sorted(combo)[1] for combo in product(*(possibilities[str(y)] for y in (2024,2025,2026)))}
+ if len(possible_medians)==1:
+  grade=next(iter(possible_medians))
+  reason='3개년 수능 참고등급 중앙값(비공식 추정)' if all(v is not None for v in annual.values()) else '일부 등급컷 미입력이나 중앙값은 단일값으로 확정(비공식 추정)'
+  return {'grade':grade,'annual':annual,'reason':reason}
+ return {'grade':None,'annual':annual,'reason':'3개년 원점수 등급컷 미검증으로 등급 범위 '+str(min(possible_medians))+'~'+str(max(possible_medians))+'등급'}
 
 def grade_of(subject,choice,score,db):
  return three_year_grade_details(subject,choice,score,db)['grade']
@@ -147,7 +179,7 @@ def get_state():
  if 'db' not in st.session_state:
   try:db=json.loads(STORAGE.read_text(encoding='utf8')) if STORAGE.exists() else starting_state()
   except:db=starting_state()
-  db.setdefault('three_year_cuts',default_three_year_cuts())
+  db['three_year_cuts']=merge_three_year_cuts(db.get('three_year_cuts'))
   st.session_state.db=db
  return st.session_state.db
 
