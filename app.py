@@ -382,11 +382,11 @@ def _find_student(db,uid,name,phone,exam):
   students=[s for s in students if s['id']==uid]
   if not students:raise ValueError(f'학생 ID/이름 불일치: {name} ({uid})')
  if phone:
-  with_phone=[s for s in students if phone_digits(s.get('phone'))==phone]
+  with_phone=[s for s in students if phone_digits(s.get('phone'))==phone or (len(phone)>=8 and len(phone_digits(s.get('phone')))>=8 and phone_digits(s.get('phone'))[-8:]==phone[-8:])]
   if with_phone:students=with_phone
   elif any(phone_digits(s.get('phone')) for s in students):raise ValueError(f'전화번호 불일치: {name}')
  if exam:
-  with_exam=[s for s in students if exam in (text_id(s.get('exam_number')),text_id(s.get('student_number')))]
+  with_exam=[s for s in students if any(k and (exam==k or (len(exam)>=len(k) and exam.endswith(k))) for k in (text_id(s.get('exam_number')),text_id(s.get('student_number'))))]
   if with_exam:students=with_exam
   elif any(text_id(s.get('exam_number')) for s in students):raise ValueError(f'수험번호 불일치: {name}')
  if len(students)!=1:raise ValueError(f'동명이인/식별정보 충돌: {name} (확인 필요 {len(students)}명)')
@@ -477,14 +477,34 @@ def parse_november_keys(contents):
 # OMR 검수는 단일 엑셀 파일의 「판독검수」 시트에서만 수행합니다.
 REVIEW_FIELDS=['검수확인(Y)','PDF쪽','영역','OMR이름후보','확정학생명','전화번호','수험번호','OMR선택과목후보','11월확정선택과목','판독상태','원본파일','처리(Y/제외)']+[f'{q}번' for q in range(1,46)]+['선택과목정정사유']
 
-def batch_review_excel(rows,source_name):
+def _identity_roster_hint(roster, r):
+ """마킹 후보를 명부와 대조한 제안값; 자동 확정이나 성적 저장에 사용하지 않습니다."""
+ phone=re.sub(r'\D','',str(r.get('phone_candidate') or ''))
+ exam=re.sub(r'\D','',str(r.get('exam_candidate') or ''))
+ matches=[]
+ for stu in roster:
+  rp=re.sub(r'\D','',str(stu.get('phone','') or ''))
+  rexam=re.sub(r'\D','',str(stu.get('exam_number') or stu.get('student_number') or ''))
+  phone_ok=bool(phone and rp and (phone==rp or phone.endswith(rp) or rp.endswith(phone)))
+  exam_ok=bool(exam and rexam and (exam==rexam or exam.endswith(rexam)))
+  # 전화번호와 수험번호의 교차확인, 최소 한 필드가 완전히 일치해야 합니다.
+  if phone_ok and (not exam or not rexam or exam_ok) or exam_ok and (not phone or not rp):matches.append(stu)
+ return matches[0] if len(matches)==1 else None
+
+def batch_review_excel(rows,source_name,roster=None):
  wb=Workbook();ws=wb.active;ws.title='판독검수';ws.append(REVIEW_FIELDS)
  for r in rows:
   n=N[which(r['subject'])];candidate=norm(r.get('explore_name') if r['subject'].startswith('탐구') else r.get('selection_choice'))
   if r['subject'] in ('영어','한국사'):candidate=r['subject']
   vals=[str(v or '') for v in (r.get('answers',[]) + ['']*45)[:45]]
-  ws.append(['',r['page'],r['subject'],r.get('name_candidate',''),r.get('name_candidate',''),'','',candidate,candidate,
+  hint=_identity_roster_hint(roster or [],r)
+  # OMR의 판독불확실 이름을 확정했다고 가장하지 않습니다. 명부 후보도 검수 후 확정합니다.
+  omr_name=r.get('name_candidate','') or '원본확인필요'
+  roster_name=hint.get('name','') if hint else ''
+  ws.append(['',r['page'],r['subject'],omr_name,roster_name,r.get('phone_candidate','') or r.get('phone_raw',''),r.get('exam_candidate','') or r.get('exam_raw',''),candidate,candidate,
     '판독실패: '+r['error'] if r.get('error') else '확인필요' if r.get('suspect') else '자동판독',source_name,'Y']+vals+[''])
+ # OMR에서 번호를 확실히 판독하지 못한 경우 '?'가 들어간 원시 후보를 보여주며,
+ # 학생 명부와의 식별은 검수 완료 후에만 수행합니다.
  ws.freeze_panes='M2';ws.auto_filter.ref=ws.dimensions
  ws.row_dimensions[1].height=32
  for cell in ws[1]:cell.fill=PatternFill('solid',fgColor='17324D');cell.font=Font(name='맑은 고딕',bold=True,color='FFFFFF');cell.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
@@ -497,12 +517,32 @@ def batch_review_excel(rows,source_name):
    cell.font=Font(name='맑은 고딕',size=10)
    if cell.column in (1,5,6,7,9,12) or cell.column>=13:cell.fill=PatternFill('solid',fgColor='FFF2C7')
   row[5].number_format='@';row[6].number_format='@'
+ # 사람이 원본을 대조하기 위한 확대 이미지: 검수용 시트의 행 번호와 매칭됩니다.
+ from openpyxl.drawing.image import Image as ExcelImage
+ proof=wb.create_sheet('원본확인')
+ proof.append(['검수엑셀 행','PDF쪽','교과','OMR이름후보','전화번호 판독후보','수험번호 판독후보','원본 OMR 식별 마킹 확대'])
+ for c in proof[1]:
+  c.fill=PatternFill('solid',fgColor='17324D');c.font=Font(name='맑은 고딕',bold=True,color='FFFFFF')
+ for j,r in enumerate(rows,2):
+  hint=_identity_roster_hint(roster or [],r)
+  proof.append([j,r['page'],r['subject'],r.get('name_candidate') or '원본확인필요',r.get('phone_candidate') or r.get('phone_raw',''),r.get('exam_candidate') or r.get('exam_raw',''),''])
+  if hint:proof.cell(j,4).comment=__import__('openpyxl').comments.Comment(f'명부 대조 후보: {hint.get("name","")}. 반드시 OMR 원본과 대조하십시오.','OMR 검수')
+  data=r.get('identity_png')
+  if data:
+   im=ExcelImage(io.BytesIO(data));im.width=306;im.height=448
+   proof.add_image(im,f'G{j}')
+   proof.row_dimensions[j].height=336
+  proof.cell(j,5).number_format='@';proof.cell(j,6).number_format='@'
+ for col,width in {'A':16,'B':12,'C':14,'D':20,'E':25,'F':23,'G':45}.items():proof.column_dimensions[col].width=width
+ proof.freeze_panes='G2'
  guide=wb.create_sheet('검수안내')
  for line in [
   'thepremium · OMR 전체 PDF 판독 후 엑셀 검수',
   '수정 시트: 판독검수 (이 시트만 수정)',
   '1. 원본 PDF와 각 행의 PDF쪽·교과·판독답안을 대조하십시오.',
-  '2. 확정학생명에는 원본의 이름을 정확히 입력하고, 전화번호·수험번호는 가능한 경우 입력하십시오.',
+  '2. D열은 OMR 이름 후보, F/G열은 전화번호·수험번호 판독 후보입니다. ? 표시는 불확실한 숫자로 반드시 원본을 확인하십시오.',
+  '3. 원본확인 시트에 수험번호·전화번호·이름 마킹 부분을 확대하여 수록했습니다. 판독된 학생정보는 검수 전 자동 확정되지 않습니다.',
+  '4. 확정학생명에는 원본의 이름을 정확히 입력하고, 전화번호·수험번호를 검수하십시오.',
   '3. 11월확정선택과목은 OMR 마킹으로 인식한 과목을 확인하십시오. 이전 선택과목은 적용하지 않습니다.',
   '4. 1번~45번의 답안을 확인/수정하십시오. 객관식은 1~5, 수학 단답형은 0~999, 미표기는 빈칸입니다.',
   '5. OMR 과목 판독이 잘못됐다면 11월확정선택과목을 정정하고 마지막 열 「선택과목정정사유」를 입력하십시오.',
@@ -536,6 +576,7 @@ def verify_batch_review(db,content,rows,source_name):
    if original.get('error'):raise ValueError('판독 실패. 재스캔 또는 이 행을 제외하십시오')
    if str(record[0] or '').strip().upper()!='Y':raise ValueError('원본 대조 후 검수확인(Y)을 입력해야 합니다')
    name=str(record[4] or '').strip();phone=str(record[5] or '').strip();exam=text_id(record[6])
+   if '?' in phone or '?' in exam:raise ValueError('전화번호/수험번호 후보에 불확실한 자리(?)가 있습니다. 원본확인 시트와 대조하여 수정하십시오.')
    stu=_find_student(db,'',name,phone,exam)
    choice=norm(record[8])
    if sub in ('영어','한국사'):choice=sub
@@ -1066,7 +1107,12 @@ elif page=='OMR 판독·검수':
                        'math_track_confident':meta.get('math_track_confident',False),
                        'name_candidate':meta.get('name_candidate',''),
                        'name_confident':meta.get('name_confident',False),
-                       'name_components':meta.get('name_components',[])})
+                       'name_components':meta.get('name_components',[]),
+                       'phone_candidate':meta.get('phone_candidate',''),
+                       'phone_raw':meta.get('phone_raw',''),
+                       'exam_candidate':meta.get('exam_candidate',''),
+                       'exam_raw':meta.get('exam_raw',''),
+                       'identity_png':cv2.imencode('.png',cv2.cvtColor(preview[293:741,25:331],cv2.COLOR_RGB2BGR))[1].tobytes()})
       except Exception as exc:
        results.append({'page':pi+1,'bundle':pi,'subject':sub,'answers':['']*N[which(sub)],
                        'stats':[],'rotation':None,'error':str(exc),'reviewed':False,'student_id':'','suspect':True,'detected':0})
@@ -1095,7 +1141,7 @@ elif page=='OMR 판독·검수':
    st.divider()
    st.subheader('③ 전체 OMR 판독 결과 엑셀 검수 → 업로드 → 정산')
    st.info('OMR 페이지별 수동 입력 대신 「판독검수」 엑셀에서 모든 학생·과목·답안을 검수하십시오. 인쇄용 성적표는 기존 양식을 유지합니다.')
-   st.download_button('thepremium-omr-review.xlsx 다운로드',data=batch_review_excel(rows,uploaded.name),file_name='thepremium-omr-review.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',type='primary',key='omr_batch_review_export')
+   st.download_button('thepremium-omr-review.xlsx 다운로드',data=batch_review_excel(rows,uploaded.name,db.get('roster',[])),file_name='thepremium-omr-review.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',type='primary',key='omr_batch_review_export')
    reviewed_file=st.file_uploader('검수가 끝난 엑셀 업로드 · 판독검수 시트',type=['xlsx'],key=f'omr_excel_review_{fingerprint[:12]}_{mode}')
    if reviewed_file is not None:
     try:

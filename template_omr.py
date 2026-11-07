@@ -276,6 +276,36 @@ def decode_name_candidate(aligned,subject):
     return {'candidate':''.join(parts) if contiguous else '',
             'confident':contiguous,'parts':statuses}
 
+# OMR 수험번호 6자리 및 휴대전화번호(010 제외) 8자리의 마킹 좌표.
+# 한 자리마다 0~9를 세로로 판독합니다. 불확실한 숫자는 '?'로 남깁니다.
+IDENTITY_DIGITS={
+ 'exam': [50.0,65.5,81.0,96.5,113.5,130.0],
+ 'phone': [161.0,176.5,192.0,208.0,238.5,255.0,270.5,286.0],
+}
+
+def decode_numeric_candidates(aligned,subject):
+ gray=cv2.cvtColor(aligned,cv2.COLOR_RGB2GRAY)
+ ref_gray=cv2.cvtColor(_ref(subject),cv2.COLOR_RGB2GRAY)
+ res={}
+ for key,xlist in IDENTITY_DIGITS.items():
+  raw=[]; diagnostics=[]
+  for col,x in enumerate(xlist):
+   strengths=[_score_at(aligned,gray,ref_gray,x,393.0+31.5*k) for k in range(10)]
+   ordering=np.argsort(strengths)[::-1]
+   best=int(ordering[0]); strongest=float(strengths[best]);gap=strongest-float(strengths[ordering[1]])
+   digit=str(best) if strongest>=.29 and gap>=.13 else '?'
+   raw.append(digit)
+   diagnostics.append({'자리':col+1,'후보':digit,'최고마킹':round(strongest,2),'차이':round(gap,2)})
+  raw=''.join(raw)
+  candidate=raw if '?' not in raw else ''
+  # 맨 앞 빈자리로 쓰는 6자리 수험번호는 완성되지 않으면 자동 매칭하지 않습니다.
+  # 인쇄 OMR의 휴대전화는 010 제외 8자리이므로 접두번호를 임의로 더하지 않습니다.
+  res[key+'_candidate']=candidate
+  res[key+'_raw']=raw
+  res[key+'_confident']=bool(candidate)
+  res[key+'_diagnostics']=diagnostics
+ return res
+
 def read_omr(image,subject):
     ref=_ref(subject)
     aligned,meta=_features_align(image,ref)
@@ -322,6 +352,7 @@ def read_omr(image,subject):
     meta['name_candidate']=nm['candidate']
     meta['name_confident']=nm['confident']
     meta['name_components']=nm['parts']
+    meta.update(decode_numeric_candidates(aligned,subject))
     if subject in ('국어','수학'):
         sel=selection_subject_candidate(aligned,subject)
         meta['selection_choice']=sel['choice']
