@@ -644,7 +644,7 @@ def november_roster_template():
  '학생명·학교·11월 수험번호/전화번호 중 하나 이상을 입력하십시오. 식별정보는 개인정보이므로 외부 공개 금지.',
  '기존 3~10월 명부와 동일 학생은 별도 신규로 생성하지 않고 연결됩니다.',
  '동명이인 또는 서로 다른 학생이 동일 전화번호/수험번호를 쓰는 경우 등록하지 않고 오류를 알려줍니다.',
- '11월에 과목이 변경되어도 이 시트의 응시과목이 우선입니다. OMR에서 실제 과목을 재확인하십시오.',
+ '과목명 칸은 11월 채점과 매칭에 사용하지 않습니다. 학생명·전화번호·수험번호로 식별하고 OMR 선택과목을 적용합니다.',
  '기존 월별 성적은 바뀌지 않으며 신규학생의 3~10월은 미응시로 표시합니다.']:
   helpws.append([line])
  helpws.column_dimensions['A'].width=115
@@ -665,9 +665,9 @@ def parse_november_roster(db,content):
    grade=str(grade or '고3').strip();exam=text_id(exam);phone=phone_digits(phone)
    if not name:raise ValueError('학생명 필수')
    if not exam and not phone:raise ValueError('수험번호 또는 전화번호를 하나 이상 입력하십시오')
-   incoming={'korean':norm(korean),'math':norm(math),'explore1':norm(explore1),'explore2':norm(explore2)}
-   for field,kind in [('korean','국어'),('math','수학'),('explore1','탐구'),('explore2','탐구')]:
-    if incoming[field] and incoming[field] not in OPTIONS[kind]:raise ValueError(f'잘못된 {kind} 선택과목: {incoming[field]}')
+   # 명부 업로드에서는 선택과목을 읽거나 검사하지 않습니다.
+   # 11월 선택과목은 OMR 마킹(국어/수학)과 탐구 과목코드로만 판별합니다.
+   incoming={}
    # 번호가 다른 학생에게 연결된 경우 절대 덮어쓰지 않습니다.
    for other in roster:
     if other['name']!=name and ((phone and phone==phone_digits(other.get('phone'))) or (exam and exam in (text_id(other.get('exam_number')), text_id(other.get('student_number'))))):
@@ -688,8 +688,7 @@ def parse_november_roster(db,content):
     if exam:stu['exam_number']=exam
     if school:stu['school']=school
     stu['grade']=grade
-    for field,value in incoming.items():
-     if value:stu[field]=value
+    # 11월 선택과목은 OMR 판독 후 별도로 저장합니다.
     changed.append({'행':lineno,'학생명':name,'처리':'기존 학생 연결','id':stu['id']})
    else:
     import hashlib
@@ -723,7 +722,7 @@ def complete_roster_workbook(db):
  '11월 신규 응시자는 맨 아래 빈 행에 추가하고 학생ID 칸을 비워두십시오.',
  '기존 학생의 이름을 변경하더라도 학생ID가 같으면 3~10월 성적이 유지됩니다.',
  '전화번호·수험번호는 앞의 0이 보존되도록 텍스트로 입력하십시오.',
- '기존 학생의 국어·수학·탐구 선택과목과 11월 OMR에서 읽은 실제 선택과목이 달라도 정산됩니다.',
+ '명부의 선택과목 입력은 무시됩니다. 11월 응시과목은 실제 OMR 마킹에서만 판별합니다.',
  '이 파일은 민감한 학생정보가 있으므로 공개 GitHub에 올리지 마십시오.',
  '기존 학생을 시트에서 삭제해도 프로그램에서는 삭제되지 않습니다.']:info.append([message])
  info.column_dimensions['A'].width=118
@@ -748,9 +747,9 @@ def preview_complete_roster(db, content):
    if not exam and not phone:raise ValueError('전화번호 또는 수험번호 입력 필요')
    if uid and uid not in original:raise ValueError('등록되지 않은 학생ID. 신규 학생은 학생ID 칸을 비워두십시오')
    if uid and uid in seen:raise ValueError('같은 학생ID가 파일에 중복되어 있습니다')
-   incoming={'korean':norm(korean),'math':norm(math),'explore1':norm(ex1),'explore2':norm(ex2)}
-   for field,domain in [('korean','국어'),('math','수학'),('explore1','탐구'),('explore2','탐구')]:
-    if incoming[field] and incoming[field] not in OPTIONS[domain]:raise ValueError(f'선택과목 오류: {incoming[field]}')
+   # 학생명·전화번호·수험번호만 명부 매칭에 사용합니다.
+   # 엑셀에 적힌 과목명은 검증 대상이 아니며 기존 선택기록도 덮어쓰지 않습니다.
+   incoming={}
    if not uid:
     samephone=[p for p in roster if phone and phone==phone_digits(p.get('phone'))]
     samename=[p for p in roster if p['name']==name]
@@ -923,9 +922,7 @@ if page=='학생 명부':
  a,b=st.columns(2)
  stu['phone']=a.text_input('전화번호(학생 식별용)',stu.get('phone',''),key='phone_'+stu['id'])
  stu['exam_number']=b.text_input('11월 수험번호(학생 식별용)',str(stu.get('exam_number') or stu.get('student_number') or ''),key='exam_'+stu['id'])
- for k,label,opts in [('korean','국어',OPTIONS['국어']),('math','수학',OPTIONS['수학']),('explore1','탐구Ⅰ',OPTIONS['탐구']),('explore2','탐구Ⅱ',OPTIONS['탐구'])]:
-  previous=norm(stu.get(k,''));options=['']+opts
-  stu[k]=st.selectbox(label,options,index=options.index(previous) if previous in options else 0,key='choice_'+k)
+ st.caption('선택과목은 학생 명부에서 수정하지 않습니다. 11월 OMR 마킹을 자동 판독하여 정답표를 연결합니다.')
  if st.button('학생 정보 저장'):save(db);st.success('저장했습니다.')
  st.dataframe([{'학생번호':x.get('student_number'),'이름':x['name'],'학교':x.get('school',''),'국어':norm(x.get('korean')),'수학':norm(x.get('math')),'탐구Ⅰ':norm(x.get('explore1')),'탐구Ⅱ':norm(x.get('explore2'))} for x in db['roster']],use_container_width=True,hide_index=True)
  st.info('수정 엑셀의 학생번호·이름·학교를 대조해 이력을 연결합니다. 서로 다른 이름이 동일 학생번호를 쓴 경우 별도 인원으로 구분합니다.')
@@ -1187,16 +1184,14 @@ elif page=='OMR 판독·검수':
      if r.get('selection_confident'):
       st.success(f'OMR 선택과목 자동판독: {detected_choice}'+(f' / 계열: {r.get("math_track")}' if r.get('math_track_confident') else ''))
      else:
-      st.warning('OMR 선택과목 마킹이 없거나 판독이 불확실합니다. 아래에서 11월 실제 선택과목을 확인하십시오.')
-    default_choice=norm(r.get('choice') or detected_choice or oldchoice)
-    choices=OPTIONS['탐구' if r['subject'].startswith('탐구') else r['subject']]
-    if r['subject'] in ('영어','한국사'):r['choice']=r['subject']
-    else:
-     r['choice']=st.selectbox('11월 실제 응시 선택과목 ('+LABEL.get(r['subject'],r['subject'])+')',['']+choices,
-       index=(['']+choices).index(default_choice) if default_choice in choices else 0,
-       key=f'actual_choice_{i}_{fingerprint[:8]}')
+      st.warning('OMR 선택과목 마킹이 없거나 판독이 불확실합니다. 검수 엑셀에서 원본과 대조하여 확인해야 하며, 과거 명부의 과목으로 대체하지 않습니다.')
+    # 학생 명부에 적힌 과목명과 관계없이 11월 OMR 마킹이 유일한 채점 기준입니다.
+    # 불확실한 과목은 임의 보완하지 않고 엑셀 검수에서 처리합니다.
+    r['choice']=(r['subject'] if r['subject'] in ('영어','한국사') else detected_choice)
+    if r['subject'] not in ('영어','한국사'):
+     st.caption('11월 OMR 판독 선택과목: '+(r['choice'] or '판독 불확실 · 검수 필요'))
      if oldchoice and r['choice'] and oldchoice!=r['choice']:
-      st.caption(f'이전 선택과목: {oldchoice} → 11월 선택과목: {r["choice"]} (11월 기준으로 정산)')
+      st.caption(f'과거 명부 표기 {oldchoice}와 달라도 OMR의 {r["choice"]}로 채점합니다.')
     if r['error']:st.error('자동판독 실패: '+r['error'])
     if r.get('suspect') and not r['error']:
      st.error('자동 판독한 답안 수가 지나치게 적습니다. OMR 정렬 또는 채점 원 위치가 틀릴 가능성이 있으므로 이 결과를 그대로 확정할 수 없습니다. 아래 정렬 미리보기를 확인해 주십시오.')
