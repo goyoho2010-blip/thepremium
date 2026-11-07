@@ -1,0 +1,986 @@
+{
+  "국어|화법과 작문": {
+    "2024": {
+      "cuts": [
+        88,
+        81,
+        72,
+        62,
+        52,
+        42,
+        32,
+        22
+      ],
+      "source": "https://kamdongmath.tistory.com/entry/2024-%EC%88%98%EB%8A%A5-%EB%93%B1%EA%B8%89%EC%BB%B7-%EC%9B%90%EC%A0%90%EC%88%98"
+    },
+    "2025": {
+      "cuts": [
+        94,
+        87,
+        78,
+        68,
+        55,
+        41,
+        29,
+        21
+      ],
+      "source": "https://sanedu.com/%EC%9E%85%EC%8B%9C%EB%A6%AC%ED%8F%AC%ED%8A%B8-%EC%86%8D%EB%B3%B4-2025%ED%95%99%EB%85%84%EB%8F%84-%EC%88%98%EB%8A%A5%EC%8B%9C%ED%97%98-%EA%B5%AD%EC%96%B4-%EC%88%98%ED%95%99-%EA%B0%80%EC%B1%84/"
+    },
+    "2026": {
+      "cuts": [
+        90,
+        83,
+        73,
+        63,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": "https://gichul.wiki/suneung/2025"
+    }
+  },
+  "국어|언어와 매체": {
+    "2024": {
+      "cuts": [
+        84,
+        77,
+        69,
+        59,
+        49,
+        39,
+        29,
+        20
+      ],
+      "source": "https://kamdongmath.tistory.com/entry/2024-%EC%88%98%EB%8A%A5-%EB%93%B1%EA%B8%89%EC%BB%B7-%EC%9B%90%EC%A0%90%EC%88%98"
+    },
+    "2025": {
+      "cuts": [
+        92,
+        85,
+        77,
+        66,
+        53,
+        39,
+        27,
+        19
+      ],
+      "source": "https://sanedu.com/%EC%9E%85%EC%8B%9C%EB%A6%AC%ED%8F%AC%ED%8A%B8-%EC%86%8D%EB%B3%B4-2025%ED%95%99%EB%85%84%EB%8F%84-%EC%88%98%EB%8A%A5%EC%8B%9C%ED%97%98-%EA%B5%AD%EC%96%B4-%EC%88%98%ED%95%99-%EA%B0%80%EC%B1%84/"
+    },
+    "2026": {
+      "cuts": [
+        85,
+        78,
+        69,
+        59,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": "https://gichul.wiki/suneung/2025"
+    }
+  },
+  "수학|확률과 통계": {
+    "2024": {
+      "cuts": [
+        94,
+        84,
+        74,
+        59,
+        42,
+        24,
+        16,
+        11
+      ],
+      "source": "https://kamdongmath.tistory.com/entry/2024-%EC%88%98%EB%8A%A5-%EB%93%B1%EA%B8%89%EC%BB%B7-%EC%9B%90%EC%A0%90%EC%88%98"
+    },
+    "2025": {
+      "cuts": [
+        92,
+        84,
+        73,
+        60,
+        42,
+        25,
+        18,
+        13
+      ],
+      "source": "https://sanedu.com/%EC%9E%85%EC%8B%9C%EB%A6%AC%ED%8F%AC%ED%8A%B8-%EC%86%8D%EB%B3%B4-2025%ED%95%99%EB%85%84%EB%8F%84-%EC%88%98%EB%8A%A5%EC%8B%9C%ED%97%98-%EA%B5%AD%EC%96%B4-%EC%88%98%ED%95%99-%EA%B0%80%EC%B1%84/"
+    },
+    "2026": {
+      "cuts": [
+        87,
+        82,
+        76,
+        65,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": "https://gichul.wiki/suneung/2025"
+    }
+  },
+  "수학|미적분": {
+    "2024": {
+      "cuts": [
+        81,
+        73,
+        63,
+        50,
+        34,
+        17,
+        9,
+        5
+      ],
+      "source": "https://kamdongmath.tistory.com/entry/2024-%EC%88%98%EB%8A%A5-%EB%93%B1%EA%B8%89%EC%BB%B7-%EC%9B%90%EC%A0%90%EC%88%98"
+    },
+    "2025": {
+      "cuts": [
+        86,
+        77,
+        68,
+        55,
+        37,
+        21,
+        14,
+        10
+      ],
+      "source": "https://sanedu.com/%EC%9E%85%EC%8B%9C%EB%A6%AC%ED%8F%AC%ED%8A%B8-%EC%86%8D%EB%B3%B4-2025%ED%95%99%EB%85%84%EB%8F%84-%EC%88%98%EB%8A%A5%EC%8B%9C%ED%97%98-%EA%B5%AD%EC%96%B4-%EC%88%98%ED%95%99-%EA%B0%80%EC%B1%84/"
+    },
+    "2026": {
+      "cuts": [
+        85,
+        80,
+        73,
+        62,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": "https://gichul.wiki/suneung/2025"
+    }
+  },
+  "수학|기하": {
+    "2024": {
+      "cuts": [
+        88,
+        78,
+        68,
+        54,
+        37,
+        19,
+        11,
+        5
+      ],
+      "source": "https://kamdongmath.tistory.com/entry/2024-%EC%88%98%EB%8A%A5-%EB%93%B1%EA%B8%89%EC%BB%B7-%EC%9B%90%EC%A0%90%EC%88%98"
+    },
+    "2025": {
+      "cuts": [
+        89,
+        80,
+        70,
+        57,
+        39,
+        23,
+        16,
+        11
+      ],
+      "source": "https://sanedu.com/%EC%9E%85%EC%8B%9C%EB%A6%AC%ED%8F%AC%ED%8A%B8-%EC%86%8D%EB%B3%B4-2025%ED%95%99%EB%85%84%EB%8F%84-%EC%88%98%EB%8A%A5%EC%8B%9C%ED%97%98-%EA%B5%AD%EC%96%B4-%EC%88%98%ED%95%99-%EA%B0%80%EC%B1%84/"
+    },
+    "2026": {
+      "cuts": [
+        85,
+        81,
+        74,
+        63,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": "https://gichul.wiki/suneung/2025"
+    }
+  },
+  "영어|영어": {
+    "2024": {
+      "cuts": [
+        90,
+        80,
+        70,
+        60,
+        50,
+        40,
+        30,
+        20
+      ],
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148919019"
+    },
+    "2025": {
+      "cuts": [
+        90,
+        80,
+        70,
+        60,
+        50,
+        40,
+        30,
+        20
+      ],
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148919019"
+    },
+    "2026": {
+      "cuts": [
+        90,
+        80,
+        70,
+        60,
+        50,
+        40,
+        30,
+        20
+      ],
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148919019"
+    }
+  },
+  "한국사|한국사": {
+    "2024": {
+      "cuts": [
+        40,
+        35,
+        30,
+        25,
+        20,
+        15,
+        10,
+        5
+      ],
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148919019"
+    },
+    "2025": {
+      "cuts": [
+        40,
+        35,
+        30,
+        25,
+        20,
+        15,
+        10,
+        5
+      ],
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148919019"
+    },
+    "2026": {
+      "cuts": [
+        40,
+        35,
+        30,
+        25,
+        20,
+        15,
+        10,
+        5
+      ],
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148919019"
+    }
+  },
+  "탐구|생활과 윤리": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|윤리와 사상": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|한국지리": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|세계지리": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|동아시아사": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|세계사": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|경제": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|정치와 법": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|사회·문화": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|물리학Ⅰ": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|화학Ⅰ": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|생명과학Ⅰ": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|지구과학Ⅰ": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|물리학Ⅱ": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|화학Ⅱ": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|생명과학Ⅱ": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  },
+  "탐구|지구과학Ⅱ": {
+    "2024": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2025": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    },
+    "2026": {
+      "cuts": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "source": ""
+    }
+  }
+}

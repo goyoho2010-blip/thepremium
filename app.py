@@ -101,24 +101,53 @@ FONTNAME='Korean'
 def norm(s):
  s=str(s or '').strip();return ALIAS.get(s,s)
 def which(subject):return '탐구' if subject.startswith('탐구') else subject
-def grade_of(subject,choice,score,cuts):
- if score is None:return None
- key=which(subject)+'|'+norm(choice)
- vals=cuts.get(key)
- if not vals:return None
- for i,v in enumerate(vals):
-  if score>=v:return i+1
- return 9
+# 2024~2026학년도 수능 원점수 참고컷 기반 잠정등급.
+# 국어·수학·탐구 공식 성적은 표준점수 기준이므로 이 비교는 공식 등급이 아닙니다.
+THREE_CUT_PATH=ROOT/'reference'/'three_year_cuts.json'
+def default_three_year_cuts():
+ return json.loads(THREE_CUT_PATH.read_text(encoding='utf-8')) if THREE_CUT_PATH.exists() else {}
+
+def grade_from_year_cut(score,cuts):
+ """확인된 경계값만 사용. 미확인 구간을 임의로 9등급 처리하지 않음."""
+ if score is None or not isinstance(cuts,list) or len(cuts)!=8:return None
+ if cuts[0] is not None and score>=cuts[0]:return 1
+ for i in range(1,8):
+  upper=cuts[i-1];lower=cuts[i]
+  if upper is not None and lower is not None and lower<=score<upper:return i+1
+ if cuts[7] is not None and score<cuts[7]:return 9
+ return None
+
+def three_year_grade_details(subject,choice,score,db):
+ if score is None:return {'grade':None,'annual':{},'reason':'원점수 미확정'}
+ group=which(subject)
+ if group=='영어':
+  g=grade_from_year_cut(score,[90,80,70,60,50,40,30,20])
+  return {'grade':g,'annual':{str(y):g for y in (2024,2025,2026)},'reason':'절대평가 고정컷'}
+ if group=='한국사':
+  g=grade_from_year_cut(score,[40,35,30,25,20,15,10,5])
+  return {'grade':g,'annual':{str(y):g for y in (2024,2025,2026)},'reason':'절대평가 고정컷'}
+ key=group+'|'+norm(choice)
+ data=db.get('three_year_cuts') or default_three_year_cuts()
+ yr_data=data.get(key,{})
+ annual={str(y):grade_from_year_cut(score,(yr_data.get(str(y)) or {}).get('cuts')) for y in (2024,2025,2026)}
+ grades=list(annual.values())
+ if any(g is None for g in grades):
+  return {'grade':None,'annual':annual,'reason':'3개년 해당 원점수 구간의 등급컷 검증 미완료'}
+ return {'grade':sorted(grades)[1],'annual':annual,'reason':'3개년 등급 중앙값(비공식 추정)'}
+
+def grade_of(subject,choice,score,db):
+ return three_year_grade_details(subject,choice,score,db)['grade']
 
 def starting_state():
  history=json.loads((DATA/'history.json').read_text(encoding='utf8')) if (DATA/'history.json').exists() else {'roster':[],'history':{}}
  roster=history['roster']
- return {'roster':roster,'history':history['history'],'results':{},'keys':{},'key_verified':{},'cuts':CUTS,'layout':{},'logos':{k:base64.b64encode((ROOT/'assets'/v).read_bytes()).decode() for k,v in {'횡성인재육성관':'hoengseong.png','대성학력개발연구소':'daesung.png','천명의선택입시연구소':'choice1000.png'}.items() if (ROOT/'assets'/v).exists()},'notes':{},'settings':{'title':'대성THE프리미엄 모의고사 성적 [11월]','subtitle':'자체 정산-10월 성적대비등급'}}
+ return {'roster':roster,'history':history['history'],'results':{},'keys':{},'key_verified':{},'cuts':CUTS,'three_year_cuts':default_three_year_cuts(),'layout':{},'logos':{k:base64.b64encode((ROOT/'assets'/v).read_bytes()).decode() for k,v in {'횡성인재육성관':'hoengseong.png','대성학력개발연구소':'daesung.png','천명의선택입시연구소':'choice1000.png'}.items() if (ROOT/'assets'/v).exists()},'notes':{},'settings':{'title':'대성THE프리미엄 모의고사 성적 [11월]','subtitle':'자체 정산-최근 3개년 수능 등급컷 비교 추정'}}
 
 def get_state():
  if 'db' not in st.session_state:
   try:db=json.loads(STORAGE.read_text(encoding='utf8')) if STORAGE.exists() else starting_state()
   except:db=starting_state()
+  db.setdefault('three_year_cuts',default_three_year_cuts())
   st.session_state.db=db
  return st.session_state.db
 
@@ -188,7 +217,7 @@ def scored(db,uid,subject):
   manual=int(rec['manual_score'])
   ceiling=50 if subject.startswith('탐구') or subject=='한국사' else 100
   if 0<=manual<=ceiling:
-   return {'choice':choice,'answers':answers,'correct':[], 'score':manual, 'grade':grade_of(subject,choice,manual,db['cuts']), 'ready':True,'review':'확정(점수수정)','key':key}
+   return {'choice':choice,'answers':answers,'correct':[], 'score':manual, 'grade':grade_of(subject,choice,manual,db), 'ready':True,'review':'확정(점수수정)','key':key}
  if (subject in ('국어','수학','탐구1','탐구2') and not choice) or len(key)!=n or not db.get('key_verified',{}).get(which(subject)+'|'+norm(choice),False) or any(str(k.get('answer','')).strip()=='' or not isinstance(k.get('points'),int) or k['points']<=0 for k in key):
   return {'choice':choice,'answers':answers,'correct':[],'score':None,'grade':None,'ready':False,'review':rec.get('review','미채점'),'key':key}
  if not answers or len(answers)!=n or rec.get('review')!='확정':
@@ -198,7 +227,7 @@ def scored(db,uid,subject):
   ok=str(a).strip()==str(k['answer']).strip() if str(a).strip() else False
   correct.append('○' if ok else '×')  # 미표기 역시 오답·0점
   if ok:total+=k['points']
- return {'choice':choice,'answers':answers,'correct':correct,'score':total,'grade':grade_of(subject,choice,total,db['cuts']),'ready':True,'review':'확정','key':key}
+ return {'choice':choice,'answers':answers,'correct':correct,'score':total,'grade':grade_of(subject,choice,total,db),'ready':True,'review':'확정','key':key}
 
 def combined(db,uid,month,subject):
  if month=='11월':return scored(db,uid,subject)
@@ -240,7 +269,7 @@ def render_pdf(db,uid,include_answers=True,test_mode=False):
   title=db['settings'].get('title','대성THE프리미엄 모의고사 성적 [11월]')
   fs=min(17, max(11, 480/max(1,pdfmetrics.stringWidth(title,FONTNAME,1))))
   c.setFont(FONTNAME,fs);c.setFillColor(HexColor('#20384E'));c.drawCentredString(297.64,745,title)
-  c.setFont(FONTNAME,10);c.drawCentredString(297.64,727,'(자체 정산 · 10월 성적 대비 잠정등급)')
+  c.setFont(FONTNAME,10);c.drawCentredString(297.64,727,'(자체 정산 · 2024~2026 수능 원점수컷 비교 추정등급)')
   text(40,696,f"학생명  {stu['name']}     학교  {stu.get('school') or '미입력'}     학년  {stu.get('grade') or '고3'}",10)
   line(684)
   if test_mode:
@@ -251,7 +280,7 @@ def render_pdf(db,uid,include_answers=True,test_mode=False):
   line(63)
   logo_or_text('대성학력개발연구소',167,20,185,38,'대성  |  대성학력개발연구소')
   logo_or_text('천명의선택입시연구소',408,18,140,42,'천명의선택입시연구소')
-  text(38,13,'※ 비공식 성적: 11월 원점수 / 10월 원점수 기준 잠정등급',7)
+  text(38,13,'※ 비공식 추정: 3개년 수능 원점수컷 비교 / 10월 실제등급은 변화 참고용',7)
  header()
  text(42,662,'교과별 11월 자체 채점 결과',11)
  columns=[42,98,239,319,398,483]
@@ -262,7 +291,7 @@ def render_pdf(db,uid,include_answers=True,test_mode=False):
   oldg=old.get('grade');newg=r.get('grade');diff=f'{oldg-newg:+d}' if isinstance(oldg,int) and isinstance(newg,int) else '-'
   text(columns[0],yy,LABEL.get(sub,sub),9);text(columns[1],yy,(r.get('choice') or '미선택')[:13],8)
   text(columns[2],yy,str(r['score']) if r['score'] is not None else '미확정',8)
-  text(columns[3],yy,str(newg) if newg else '-',9)
+  text(columns[3],yy,str(newg) if newg else ('검증중' if r['score'] is not None else '-'),9)
   text(columns[4],yy,str(oldg) if oldg else '-',9);text(columns[5],yy,diff,9)
   line(yy-10)
  text(42,425,'대성THE프리미엄모의고사 응시 월별 등급 변화',11)
@@ -359,7 +388,7 @@ def editable_workbook(db,test_mode=False):
   '5. 수학 단답형은 해당 문항에 숫자 전체를 입력합니다.',
   '6. 11월 응시과목이 이전 과목과 달라도 「11월 응시과목」을 올바르게 선택해 정산합니다.',
   '7. 원점수 자체를 변경해야 하는 예외 상황에는 점수직접수정(선택)에 수치를 적고 수정사유를 필수 입력합니다.',
-  '8. 점수직접수정에 값이 있으면 답안 채점점수 대신 입력 점수로 10월 컷 잠정등급을 계산합니다. 정오답 표시는 직접 수정점수와 별개입니다.',
+  '8. 점수직접수정에 값이 있으면 답안 채점점수 대신 입력 점수로 3개년 수능 참고컷 추정등급을 계산합니다. 정오답 표시는 직접 수정점수와 별개입니다.',
   '9. 점수직접수정을 해제하려면 빈칸으로 만들고 답안·정답 기준 재채점을 합니다.',
   '10. 학생명은 반드시 일치해야 하며 전화번호/수험번호는 보조 식별키입니다. 동명이인·번호 충돌은 거부합니다.',
   '11. 3~10월 기록은 수정되지 않습니다. 11월 성적만 변경됩니다.',
@@ -886,8 +915,8 @@ if test_mode:
  st.error('🧪 테스트 모드 — 샘플 OMR을 판독하고 PDF까지 확인할 수 있으나, 실제 11월 성적에는 반영되지 않습니다. 결과는 세션 종료 시 사라집니다.')
 else:
  st.info('실제 운영 모드 — 확정된 답안과 정답, 성적을 운영 데이터에 저장합니다.')
-st.caption('Streamlit Cloud 배포판 · 2026년 11월 고3 · OMR 판독 / 검수 / 10월 기준 잠정 등급 / 월별 변화 / PDF 인쇄 및 파일 저장')
-st.warning('11월 전국 공동 채점 결과가 아닙니다. 10월 원점수 등급컷을 11월에 적용한 비공식 참고 성적이며 시험 난이도 차이는 보정하지 않습니다.')
+st.caption('Streamlit Cloud 배포판 · 2026년 11월 고3 · OMR 판독 / 검수 / 3개년 수능 기준 추정등급 / 월별 변화 / PDF 인쇄 및 파일 저장')
+st.warning('11월 전국 공동 채점 결과가 아닙니다. 2024~2026학년도 수능 원점수 참고 등급컷으로 비교한 비공식 추정 성적이며 시험 난이도 차이는 보정하지 않습니다. 일부 등급컷 미확인 과목은 등급이 공란으로 표시됩니다.')
 page=st.sidebar.radio('메뉴',['11월 정답·배점','학생 명부','OMR 판독·검수','엑셀 답안수정','학생 성적표','일괄 인쇄·저장','설정·로고·백업'])
 if st.sidebar.button('현재 수정사항 저장',use_container_width=True):
  if test_mode:st.sidebar.info('테스트 중에는 서버 저장을 하지 않습니다. 입력값은 현재 세션에서만 유지됩니다.')
@@ -1055,7 +1084,7 @@ elif page=='11월 정답·배점':
  st.dataframe([{'영역·과목':name,'확정 상태':'확정' if db.get('key_verified',{}).get(name) else '미확정','문항수':len(entries),'총 배점':sum((e.get('points') or 0) for e in entries)} for name,entries in db['keys'].items()],hide_index=True,use_container_width=True)
  st.download_button('확정 정답 백업 JSON 다운로드',json.dumps({'keys':db['keys'],'key_verified':db.get('key_verified',{})},ensure_ascii=False,indent=2).encode('utf-8'),file_name='thepremium-answer-keys.json',mime='application/json')
  st.divider()
- st.subheader('10월 등급컷 검토·수정')
+ st.subheader('10월 더프 등급컷 보관 (11월 정산에는 미사용)')
  cut=db['cuts'].get(k)
  if cut:
   cutoff=st.text_input('1~9등급의 원점수 하한(쉼표 구분)',','.join(map(str,cut)))
@@ -1065,6 +1094,48 @@ elif page=='11월 정답·배점':
     assert len(vals)==9 and vals==sorted(vals,reverse=True) and vals[-1]==0
     db['cuts'][k]=vals;save(db);st.success('저장했습니다.')
    except:st.error('9개 정수, 내림차순, 마지막 값 0으로 입력하십시오.')
+
+ # 3개년 수능 원점수 참고컷 전용 엑셀 관리
+ st.divider()
+ st.subheader('2024~2026학년도 수능 원점수 등급컷 비교 · 기준자료')
+ st.info('11월 정산은 3개년 수능 원점수 참고컷을 사용합니다. 10월 더프 등급은 성적 변화 비교용으로만 유지합니다. 국어·수학·탐구의 수능 공식 등급은 표준점수 기준이며 이 결과는 비공식 추정입니다.')
+ template=ROOT/'reference'/'thepremium-csat-3years.xlsx'
+ if template.exists():
+  st.download_button('3개년 수능 등급컷 검증용 엑셀 다운로드',template.read_bytes(),file_name='thepremium-csat-3years.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+ entered=st.file_uploader('검증 완료한 3개년 원점수 등급컷 엑셀 업로드',type=['xlsx'],key='three_csat_xlsx')
+ if entered:
+  try:
+   from openpyxl import load_workbook
+   book=load_workbook(io.BytesIO(entered.getvalue()),read_only=True,data_only=True)
+   ws=book['3개년등급컷']
+   proposed=copy.deepcopy(db.get('three_year_cuts') or default_three_year_cuts())
+   updated_rows=0
+   for cells in ws.iter_rows(min_row=2,values_only=True):
+    if not cells or not cells[0]:continue
+    year=int(cells[0]);subject=str(cells[1]).strip();name=norm(cells[2])
+    if year not in (2024,2025,2026) or subject not in ('국어','수학','영어','한국사','탐구'):
+     raise ValueError(f'연도·영역 확인 필요: {year} / {subject}')
+    key=subject+'|'+name
+    if key not in proposed:raise ValueError('등록되지 않은 과목: '+key)
+    cuts=[None if v is None or str(v).strip()=='' else int(v) for v in cells[3:11]]
+    if len(cuts)!=8:raise ValueError(f'{key}: 등급컷 열 8개 필요')
+    maximum=50 if subject in ('탐구','한국사') else 100
+    numeric=[x for x in cuts if x is not None]
+    if any(v<0 or v>maximum for v in numeric) or numeric!=sorted(numeric,reverse=True):
+     raise ValueError(f'{year} {key}: 원점수 범위 또는 등급컷 순서 오류')
+    if subject in ('영어','한국사'):
+     standard=[90,80,70,60,50,40,30,20] if subject=='영어' else [40,35,30,25,20,15,10,5]
+     if cuts!=standard:raise ValueError(f'{year} {subject}: 절대평가 고정 등급컷 변경 불가')
+    proposed[key][str(year)]={'cuts':cuts,'source':str(cells[11] or '')}
+    updated_rows+=1
+   st.success(f'등급컷 검증: {updated_rows}개 연도·과목 행')
+   confirm=st.checkbox('수능 원점수 참고컷을 원자료와 대조했고 11월 잠정등급을 재계산합니다.',key='threecut_accept')
+   if st.button('3개년 등급컷 확정 · 기존 11월 성적 재산정',disabled=not confirm,type='primary'):
+    db['three_year_cuts']=proposed;save(db)
+    st.success('등급컷 기준 변경 완료. OMR 답안·원점수·기존 3~10월 성적은 보존되고, 11월 추정등급만 조회 시 재산정됩니다.')
+  except Exception as exc:st.error('3개년 등급컷 엑셀 검증 실패: '+str(exc))
+ count=sum(1 for years in db.get('three_year_cuts',{}).values() for rec in years.values() if all(v is not None for v in rec.get('cuts',[])))
+ st.caption(f'현재 1~8등급 원점수컷 전체 확인: {count}개 연도·과목 / 자료 미확인 구간은 등급을 임의 산출하지 않습니다.')
 
 elif page=='OMR 판독·검수':
  if not db['roster']:
@@ -1356,6 +1427,16 @@ elif page=='학생 성적표':
  for sub in CATS:
   r=scored(db,uid,sub);rows.append({'영역':sub,'선택과목':r.get('choice'),'11월 원점수':r.get('score'),'11월 잠정등급':r.get('grade'),'검수':r.get('review')})
  st.dataframe(rows,hide_index=True,use_container_width=True)
+ st.caption('11월 추정등급은 2024~2026학년도 수능 원점수컷으로 산정한 각 연도 등급의 중앙값입니다. 공식 수능등급이 아닙니다.')
+ annual_rows=[]
+ for sub in CATS:
+  result=scored(db,uid,sub)
+  if result.get('score') is not None:
+   detail=three_year_grade_details(sub,result.get('choice'),result['score'],db)
+   annual_rows.append({'영역':sub,'11월원점수':result['score'],'2024 수능참고등급':detail['annual'].get('2024'),'2025 수능참고등급':detail['annual'].get('2025'),'2026 수능참고등급':detail['annual'].get('2026'),'3개년중앙등급':detail['grade'],'산출상태':detail['reason']})
+ if annual_rows:
+  st.subheader('11월 원점수와 3개년 수능 등급 비교')
+  st.dataframe(annual_rows,hide_index=True,use_container_width=True)
  st.subheader('대성THE프리미엄모의고사 응시 월별 등급 변화')
  history=[]
  for month in MONTHS:
