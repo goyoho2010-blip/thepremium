@@ -126,15 +126,28 @@ def merge_three_year_cuts(previous, baseline=None):
  return current
 
 def possible_grades_from_year_cut(score,cuts):
- """미검증 컷이 있으면 가능한 1~9등급 집합을 반환. 공란을 임의의 컷으로 채우지 않음."""
- if score is None or not isinstance(cuts,list) or len(cuts)!=8:return set(range(1,10))
- possible=set()
- for g in range(1,10):
-  # g등급: (g-1)등급 하한보다 낮고 g등급 하한 이상
-  higher_ok=(g==1 or cuts[g-2] is None or score<cuts[g-2])
-  lower_ok=(g==9 or cuts[g-1] is None or score>=cuts[g-1])
-  if higher_ok and lower_ok:possible.add(g)
- return possible
+ """확인된 모든 등급 경계(1~8등급 하한)를 반영하여 가능한 등급을 반환.
+
+ 각 경계 i의 원점수 하한이 확인됐으면 score >= 하한일 때 i등급 이내,
+ score < 하한일 때 i+1등급 이하가 될 수 없습니다. 비어 있는 경계는
+ 미확인으로 두되 이미 확인된 다른 경계의 판단력은 보존합니다.
+ """
+ if score is None or not isinstance(cuts,list) or len(cuts)!=8:
+  return set(range(1,10))
+ known=[(i,cut) for i,cut in enumerate(cuts,1) if cut is not None]
+ # 출처 자료가 잘못 입력되었다면 조용히 잘못된 등급을 만들어내지 않습니다.
+ if any(not isinstance(c,(int,float)) or isinstance(c,bool) for _,c in known):
+  return set(range(1,10))
+ if any(known[i][1]<known[i+1][1] for i in range(len(known)-1)):
+  return set(range(1,10))
+ try:
+  value=float(score)
+ except (TypeError,ValueError):
+  return set(range(1,10))
+ return {g for g in range(1,10) if all(
+  (value>=cut) if g<=boundary else (value<cut)
+  for boundary,cut in known
+ )}
 
 def grade_from_year_cut(score,cuts):
  possibilities=possible_grades_from_year_cut(score,cuts)
