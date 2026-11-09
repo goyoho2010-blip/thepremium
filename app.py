@@ -188,13 +188,39 @@ def starting_state():
  roster=history['roster']
  return {'roster':roster,'history':history['history'],'results':{},'keys':{},'key_verified':{},'cuts':CUTS,'three_year_cuts':default_three_year_cuts(),'layout':{},'logos':{k:base64.b64encode((ROOT/'assets'/v).read_bytes()).decode() for k,v in {'횡성인재육성관':'hoengseong.png','대성학력개발연구소':'daesung.png','천명의선택입시연구소':'choice1000.png'}.items() if (ROOT/'assets'/v).exists()},'notes':{},'settings':{'title':'대성THE프리미엄 모의고사 성적 [11월]','subtitle':'자체 정산-최근 3개년 수능 등급컷 비교 추정'}}
 
+# 2026-11-09: 학생 OMR을 재업로드하지 않고 누락된 11월 탐구 정답을 자동 보완합니다.
+_ADDITIONAL_KEY_FILE=ROOT/'reference'/'november_additional_keys.json'
+
+def apply_additional_keys(db):
+ """새 공식 정답을 기존 결과에 합칩니다. 검증된 수동 교정본은 덮어쓰지 않습니다."""
+ if not _ADDITIONAL_KEY_FILE.exists():
+  return False
+ incoming=json.loads(_ADDITIONAL_KEY_FILE.read_text(encoding='utf-8'))
+ target=db.setdefault('keys',{})
+ verified=db.setdefault('key_verified',{})
+ changed=False
+ for k,entries in incoming.items():
+  if not k.startswith('탐구|') or len(entries)!=20 or sum(e['points'] for e in entries)!=50:
+   raise ValueError(f'내장 11월 정답표 검증 실패: {k}')
+  if verified.get(k) and len(target.get(k,[]))==20:
+   continue  # 원본과 대조하여 이미 확정한 관리자의 정답을 존중
+  target[k]=entries
+  verified[k]=True
+  changed=True
+ return changed
+
 def get_state():
  if 'db' not in st.session_state:
   try:db=json.loads(STORAGE.read_text(encoding='utf8')) if STORAGE.exists() else starting_state()
   except:db=starting_state()
   db['three_year_cuts']=merge_three_year_cuts(db.get('three_year_cuts'))
   st.session_state.db=db
- return st.session_state.db
+ # 구버전 운영 DB에서도 추가된 두 탐구 정답표를 보존 데이터에 자동 합칩니다.
+ active=st.session_state.db
+ if apply_additional_keys(active):
+  if not st.session_state.get('test_mode',False):
+   STORAGE.write_text(json.dumps(active,ensure_ascii=False,indent=2),encoding='utf8')
+ return active
 
 def save(db):
  # 테스트 모드는 서버 파일을 변경하지 않습니다. 테스트 데이터는 현재 로그인 세션의 메모리에서만 관리됩니다.
@@ -1059,6 +1085,70 @@ elif page=='11월 정답·배점':
     db.setdefault('key_verified',{}).update({k:True for k in verified_keys})
     save(db);st.success('정답·배점 등록 완료 — 이제 검수 엑셀 업로드로 점수/잠정등급이 자동 정산됩니다.')
   except Exception as ex:st.error('정답 엑셀 오류: '+str(ex))
+ # 누락된 11월 채점 정답표에 대한 진단과 선택적 보완 등록
+ st.divider()
+ st.subheader('정답표 누락 진단 · 미산출 탐구 성적 복구')
+ st.caption('2026년 11월 9일 추가: 정치와 법·사회·문화 정답 20문항(각 50점)은 내장 기준표에 자동 등록됩니다. 기존 학생 OMR은 다시 업로드하지 마십시오.')
+ missing_subjects=('사회·문화','정치와 법')
+ impact=[]
+ for stu in db.get('roster',[]):
+  for subject in ('탐구1','탐구2'):
+   result=db.get('results',{}).get(stu['id'],{}).get(subject,{})
+   choice=norm(result.get('choice',''))
+   if result.get('review')=='확정' and choice in missing_subjects:
+    key='탐구|'+choice
+    key_ok=bool(db.get('key_verified',{}).get(key)) and len(db.get('keys',{}).get(key,[]))==20
+    if not key_ok:impact.append({'학생':stu['name'],'영역':subject,'OMR 선택과목':choice,'원인':'11월 정답·배점 미등록'})
+ unresolved=[choice for choice in missing_subjects if not (db.get('key_verified',{}).get('탐구|'+choice) and len(db.get('keys',{}).get('탐구|'+choice,[]))==20)]
+ if unresolved:
+  st.error('11월 정답표 누락: '+', '.join(unresolved)+' · 정답표 없이는 원점수를 산출할 수 없습니다.')
+  if impact:
+   st.warning(f'이미 OMR 답안이 확정되었지만 채점되지 않은 학생·교과 {len(impact)}건입니다. 답안을 재업로드할 필요는 없습니다.')
+   st.dataframe(impact,hide_index=True,use_container_width=True)
+  template=ROOT/'reference'/'thepremium-missing-keys.xlsx'
+  if template.exists():
+   st.download_button('누락 과목 정답·배점 입력 엑셀 다운로드',template.read_bytes(),file_name='thepremium-missing-keys.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  added=st.file_uploader('원본과 대조해 작성한 「정답보완」 엑셀 업로드',type=['xlsx'],key='missing_keys_upload')
+  if added:
+   try:
+    b=load_workbook(io.BytesIO(added.getvalue()),read_only=True,data_only=True)
+    if '정답보완' not in b.sheetnames:raise ValueError('「정답보완」 시트가 없습니다.')
+    allrows=list(b['정답보완'].iter_rows(values_only=True))
+    expected_header=['영역','과목명','문항번호','정답','배점','원본검수']
+    if list(allrows[0][:6])!=expected_header:raise ValueError('정답보완 시트의 열 제목이 다릅니다.')
+    groups={}
+    for rownum,record in enumerate(allrows[1:],2):
+     if all(v is None or str(v).strip()=='' for v in record[:6]):continue
+     area=str(record[0] or '').strip();choice=norm(record[1]);question=record[2]
+     answer=str(record[3] if record[3] is not None else '').strip()
+     points=record[4];check=str(record[5] or '').strip().upper()
+     if not answer and points is None and not check:continue  # 이번에 등록하지 않는 과목의 빈 템플릿 행
+     if area!='탐구' or choice not in missing_subjects:raise ValueError(f'{rownum}행: 지원하지 않는 교과명')
+     if not isinstance(question,int) or not 1<=question<=20:raise ValueError(f'{rownum}행: 문항번호는 1~20 정수')
+     if answer not in ('1','2','3','4','5'):raise ValueError(f'{rownum}행: 실제 정답 1~5를 입력하십시오. 공란은 허용하지 않습니다.')
+     if points not in (2,3):raise ValueError(f'{rownum}행: 배점은 2 또는 3이어야 합니다.')
+     if check!='Y':raise ValueError(f'{rownum}행: 원본검수 열에 Y를 입력하십시오.')
+     if question in groups.setdefault(choice,{}):raise ValueError(f'{rownum}행: {choice} {question}번 중복')
+     groups[choice][question]={'answer':answer,'points':int(points)}
+    complete={}
+    for choice,items in groups.items():
+     if set(items)!=set(range(1,21)):raise ValueError(f'{choice}: 정답 20문항을 모두 입력해야 합니다.')
+     entries=[items[q] for q in range(1,21)]
+     if sum(z['points'] for z in entries)!=50:raise ValueError(f'{choice}: 배점 합계가 50점이 아닙니다.')
+     complete['탐구|'+choice]=entries
+    if not complete:raise ValueError('등록 가능한 정답이 없습니다.')
+    st.success(f'정답표 검증 통과: {len(complete)}과목 / 과목별 20문항·50점')
+    st.dataframe([{'과목':k.split('|')[1],'정답수':len(v),'합계':sum(t['points'] for t in v)} for k,v in complete.items()],hide_index=True,use_container_width=True)
+    if st.checkbox('제공된 11월 공식 정답 원본과 20문항의 정답·배점을 대조했습니다.',key='missing_key_certify'):
+     if st.button('누락 정답표 확정 등록 · 기존 학생 성적 재정산',type='primary',key='apply_missing_keys'):
+      db.setdefault('keys',{}).update(complete)
+      db.setdefault('key_verified',{}).update({k:True for k in complete})
+      save(db)
+      st.success('정답표 저장 완료. 기존 탐구 OMR 판독·확정 기록은 유지되며 성적표 조회 시 자동 재산정됩니다.')
+      st.rerun()
+   except Exception as err:st.error('정답보완 엑셀 검증 오류: '+str(err))
+ else:
+  st.success('사회·문화와 정치와 법 정답표가 모두 검증·등록되었습니다.')
  st.divider()
  st.subheader('① 11월 정답 원본 확인')
  st.info('앞서 제공받은 11월 정답 이미지 16장을 원본 대조용으로 포함했습니다. 이미지를 보고 정답·배점을 검수한 뒤 아래 표를 확정해야 채점됩니다. 원본 이미지에서 정답이 자동 추출·검증된 상태는 아닙니다.')
